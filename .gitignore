@@ -1,0 +1,4 @@
+# mpv 缓存和临时文件
+cache/
+watch_later/
+*.log
