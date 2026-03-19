@@ -99,6 +99,7 @@ local function fetch_and_parse_epg_async()
         end)
         return
     end
+    mp.msg.error("http_request 失败，尝试 curl")
     mp.msg.warn("尝试使用 curl 下载 EPG")
     mp.command_native_async({
         name = "subprocess",
@@ -109,6 +110,7 @@ local function fetch_and_parse_epg_async()
     }, function(success, res, err)
         if success and res.status == 0 and res.stdout and res.stdout ~= "" then
             parse_epg_string(res.stdout)
+            mp.msg.warn(" curl 下载 EPG成功")
         else
             mp.msg.error("curl 失败，尝试 PowerShell")
             local ps_args = {
