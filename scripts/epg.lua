@@ -301,6 +301,12 @@ function show_iptv_menu()
 end
 
 mp.add_key_binding("F8", "show-iptv-menu", show_iptv_menu)
+mp.add_key_binding("MBTN_RIGHT", "show-iptv-menu-mouse", show_iptv_menu)
+
+-- 强制覆盖鼠标右键绑定，优先于 uosc 的暂停功能
+mp.set_key_bindings({
+    {'MBTN_RIGHT', show_iptv_menu}
+}, 'MBTN_RIGHT', 'force')
 
 -- 跟踪当前播放的频道
 mp.observe_property("path", "string", function(name, path)
@@ -328,10 +334,15 @@ mp.observe_property("path", "string", function(name, path)
         end
         mp.osd_message("解析 M3U...", 2)
         if parse_m3u(clean_path) then
-            mp.osd_message("IPTV 已加载！F8:选台菜单", 4)
+            mp.osd_message("IPTV 已加载！鼠标右键:选台菜单", 4)
         end
     end
 end)
 
-mp.msg.info("IPTV 脚本已加载: F8=三级选台菜单 (分组 > 频道 > EPG)")
+mp.msg.info("IPTV 脚本已加载: 鼠标右键=三级选台菜单 (分组 > 频道 > EPG)")
+
+-- 强制覆盖鼠标右键绑定，优先于 uosc 的暂停功能
+mp.set_key_bindings({
+    {'MBTN_RIGHT', show_iptv_menu}
+}, 'MBTN_RIGHT', 'force')
 
