@@ -1,0 +1,2 @@
+-- Empty main.lua to suppress mpv warning
+-- This directory is used for curl binary storage

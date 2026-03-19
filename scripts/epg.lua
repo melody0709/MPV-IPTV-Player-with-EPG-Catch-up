@@ -23,6 +23,13 @@ local state = {
 }
 
 -- ==================== 工具函数（保持原样） ====================
+
+-- 去除字符串前后空白字符
+local function trim(s)
+    if not s then return "" end
+    return s:match("^%s*(.-)%s*$")
+end
+
 local function xmltv_to_utc(time_str)
     local y, m, d, h, min, s, sign, offset_h, offset_m = time_str:match("^(%d%d%d%d)(%d%d)(%d%d)(%d%d)(%d%d)(%d%d) ([%+%-])(%d%d)(%d%d)")
     if not y then return "" end
@@ -191,17 +198,6 @@ end
 local function fetch_and_parse_epg_async()
     if state.epg_url == "" then return end
     mp.osd_message("正在后台下载 EPG 数据...", 3)
-    if mp.http_request then
-        mp.http_request({
-            url = state.epg_url,
-            method = "GET",
-            headers = { ["Accept-Encoding"] = "gzip, deflate" },
-        }, function(res)
-            if res.status == 200 and res.body then parse_epg_string(decompress_gzip_if_needed(res.body)) end
-        end)
-        return
-    end
-    mp.msg.error("http_request 失败，尝试 curl")
     mp.msg.warn("尝试使用 curl 下载 EPG")
     
     -- 构建可能的curl命令列表：先本地，后系统
@@ -276,7 +272,7 @@ local function parse_m3u(path)
     if not content then return false end
     state.groups = {}
     state.group_names = {}
-    state.epg_url = options.epg_download_url
+    state.epg_url = trim(options.epg_download_url)
     if state.epg_url ~= "" then
         mp.msg.info("使用配置的 EPG 下载连接: " .. state.epg_url)
     end
@@ -284,7 +280,7 @@ local function parse_m3u(path)
     for line in content:gmatch("([^\r\n]+)") do
         if line:match("^#EXTM3U") then
             local epg = line:match('x%-tvg%-url="([^"]+)"')
-            if epg and state.epg_url == "" then state.epg_url = epg end
+            if epg and state.epg_url == "" then state.epg_url = trim(epg) end
         elseif line:match("^#EXTINF") then
             local comma_name = line:match(",(.*)$")
             current_info = {
