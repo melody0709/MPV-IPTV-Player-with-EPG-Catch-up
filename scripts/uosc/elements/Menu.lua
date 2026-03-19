@@ -1447,6 +1447,9 @@ function Menu:render()
 		if is_parent then
 			-- 父菜单背景点击：仅在没有具体项被点击时收起子菜单
 			cursor:zone('primary_down', bg_rect, self:create_action(function() self:slide_in_menu(menu.id, x) end))
+			-- 父菜单滚轮支持
+			cursor:zone('wheel_down', bg_rect, function() self:set_scroll_to(menu.scroll_y + self.scroll_step * 3, menu.id) end)
+			cursor:zone('wheel_up', bg_rect, function() self:set_scroll_to(menu.scroll_y - self.scroll_step * 3, menu.id) end)
 		end
 
 		-- Scrollbar
