@@ -86,6 +86,102 @@ local function parse_epg_string(xml_str)
     if count > 0 then mp.osd_message("EPG 已加载: " .. count .. " 条节目", 3) end
 end
 
+local function get_curl_path()
+    -- 获取脚本所在目录
+    local script_dir = mp.get_script_directory()
+    if not script_dir then return nil end
+    -- 根据平台决定二进制文件名
+    local is_windows = package.config:sub(1,1) == '\\'
+    local bin_name = is_windows and "curl.exe" or "curl"
+    local bin_path = utils.join_path(script_dir, "bin", bin_name)
+    local file = io.open(bin_path, "r")
+    if file then
+        file:close()
+        return bin_path
+    end
+    -- 如果不存在，返回nil，让系统自动查找curl
+    return nil
+end
+
+local function decompress_gzip_if_needed(data)
+    -- 检查是否为gzip格式（前两个字节为0x1F 0x8B）
+    if #data < 2 then return data end
+    local byte1, byte2 = data:byte(1), data:byte(2)
+    if byte1 == 0x1F and byte2 == 0x8B then
+        mp.msg.verbose("检测到gzip压缩数据，尝试解压...")
+        local is_windows = package.config:sub(1,1) == '\\'
+        if is_windows then
+            -- Windows: 使用PowerShell解压，通过临时文件避免编码问题
+            local temp_dir = os.getenv('TEMP') or mp.get_script_directory()
+            local temp_file = utils.join_path(temp_dir, "mpv_epg_" .. os.time() .. "_" .. math.random(10000) .. ".gz")
+
+            
+            -- 写入临时文件
+            local f = io.open(temp_file, "wb")
+            if f then
+                f:write(data)
+                f:close()
+                
+                -- 使用PowerShell解压gzip文件
+                local ps_cmd = string.format([[
+                    try {
+                        $inFile = '%s'
+                        $bytes = [System.IO.File]::ReadAllBytes($inFile)
+                        $ms = New-Object System.IO.MemoryStream($bytes, $false)
+                        $gz = New-Object System.IO.Compression.GzipStream($ms, [System.IO.Compression.CompressionMode]::Decompress)
+                        $stdout = [Console]::OpenStandardOutput()
+                        $gz.CopyTo($stdout)
+                        $stdout.Flush()
+                        $gz.Close()
+                        $ms.Close()
+                    } finally {
+                        if (Test-Path $inFile) { Remove-Item $inFile -Force }
+                    }
+                ]], temp_file:gsub("\\", "\\\\"):gsub("'", "''"))
+                
+                local result = mp.command_native({
+                    name = "subprocess",
+                    args = {"powershell", "-NoProfile", "-Command", ps_cmd},
+                    capture_stdout = true,
+                    capture_stderr = true,
+                    playback_only = false
+                })
+                
+                if result.status == 0 and result.stdout then
+                    mp.msg.verbose("gzip解压成功")
+                    return result.stdout
+                else
+                    mp.msg.warn("gzip解压失败，返回原始数据")
+                    -- 清理临时文件
+                    os.remove(temp_file)
+                    return data
+                end
+            else
+                mp.msg.warn("无法创建临时文件，返回原始数据")
+                return data
+            end
+        else
+            -- Linux/macOS: 使用gzip命令
+            local result = mp.command_native({
+                name = "subprocess",
+                args = {"gzip", "-d", "-c"},
+                capture_stdout = true,
+                capture_stderr = true,
+                stdin_data = data
+            })
+            if result.status == 0 and result.stdout then
+                mp.msg.verbose("gzip解压成功")
+                return result.stdout
+            else
+                mp.msg.warn("gzip解压失败，返回原始数据")
+                return data
+            end
+        end
+    end
+    -- 不是gzip格式，返回原始数据
+    return data
+end
+
 local function fetch_and_parse_epg_async()
     if state.epg_url == "" then return end
     mp.osd_message("正在后台下载 EPG 数据...", 3)
@@ -95,24 +191,24 @@ local function fetch_and_parse_epg_async()
             method = "GET",
             headers = { ["Accept-Encoding"] = "gzip, deflate" },
         }, function(res)
-            if res.status == 200 and res.body then parse_epg_string(res.body) end
+            if res.status == 200 and res.body then parse_epg_string(decompress_gzip_if_needed(res.body)) end
         end)
         return
     end
     mp.msg.error("http_request 失败，尝试 curl")
     mp.msg.warn("尝试使用 curl 下载 EPG")
-    mp.command_native_async({
-        name = "subprocess",
-        args = {"curl", "-s", "--compressed", "-L", state.epg_url},
-        capture_stdout = true,
-        capture_stderr = true,
-        playback_only = false
-    }, function(success, res, err)
-        if success and res.status == 0 and res.stdout and res.stdout ~= "" then
-            parse_epg_string(res.stdout)
-            mp.msg.warn(" curl 下载 EPG成功")
-        else
-            mp.msg.error("curl 失败，尝试 PowerShell")
+    
+    -- 构建可能的curl命令列表：先本地，后系统
+    local curl_commands = {}
+    local local_curl = get_curl_path()
+    if local_curl then
+        table.insert(curl_commands, local_curl)
+    end
+    table.insert(curl_commands, "curl")  -- 系统curl
+    
+    local function try_next(index)
+        if index > #curl_commands then
+            mp.msg.error("所有 curl 尝试失败，尝试 PowerShell")
             local ps_args = {
                 "powershell", "-NoProfile", "-Command",
                 "$url = '" .. state.epg_url .. "'; $wc = New-Object System.Net.WebClient; $bytes = $wc.DownloadData($url); [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"
@@ -125,13 +221,34 @@ local function fetch_and_parse_epg_async()
                 playback_only = false
             }, function(ps_success, ps_res)
                 if ps_success and ps_res.status == 0 and ps_res.stdout then
-                    parse_epg_string(ps_res.stdout)
+                    parse_epg_string(decompress_gzip_if_needed(ps_res.stdout))
                 else
                     mp.osd_message("EPG 下载失败", 5)
                 end
             end)
+            return
         end
-    end)
+        
+        local curl_cmd = curl_commands[index]
+        mp.msg.verbose("尝试 curl: " .. curl_cmd)
+        mp.command_native_async({
+            name = "subprocess",
+            args = {curl_cmd, "-s", "--compressed", "-L", state.epg_url},
+            capture_stdout = true,
+            capture_stderr = true,
+            playback_only = false
+        }, function(success, res, err)
+            if success and res.status == 0 and res.stdout and res.stdout ~= "" then
+                parse_epg_string(decompress_gzip_if_needed(res.stdout))
+                mp.msg.warn(" curl 下载 EPG成功")
+            else
+                -- 失败，尝试下一个
+                try_next(index + 1)
+            end
+        end)
+    end
+    
+    try_next(1)
 end
 
 local function read_file_safe(path)
