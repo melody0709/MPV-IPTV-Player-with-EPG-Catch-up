@@ -15,11 +15,13 @@ opt.read_options(options)
 local state = {
     m3u_path = "",
     epg_url = "",
-    groups = {},       
-    group_names = {},  
-    epg_data = {},     
+    groups = {},
+    group_names = {},
+    epg_data = {},
     is_loaded = false,
-    current_channel = nil
+    current_channel = nil,
+    history_file = "epg_history.json",
+    channel_history = {}
 }
 
 -- ==================== 工具函数（保持原样） ====================
@@ -28,6 +30,137 @@ local state = {
 local function trim(s)
     if not s then return "" end
     return s:match("^%s*(.-)%s*$")
+end
+
+-- 获取历史记录文件路径
+-- 优先使用 mpv 配置目录，如果不存在则使用 Windows 临时目录
+local function get_history_file_path()
+    -- 方法1: 使用 mpv 配置目录
+    local config_dir = mp.find_config_file("")
+    if config_dir then
+        -- 移除末尾的目录分隔符
+        config_dir = config_dir:gsub("[\\/]+$", "")
+        local history_path = utils.join_path(config_dir, state.history_file)
+        mp.msg.info("历史记录路径 (mpv配置目录): " .. history_path)
+        return history_path
+    end
+
+    -- 方法2: 获取 mpv 配置路径
+    local mpv_config = mp.get_property("config-dir", "")
+    if mpv_config and mpv_config ~= "" then
+        local history_path = utils.join_path(mpv_config, state.history_file)
+        mp.msg.info("历史记录路径 (config-dir): " .. history_path)
+        return history_path
+    end
+
+    -- 方法3: 使用 Windows 临时目录
+    local is_windows = package.config:sub(1,1) == '\\'
+    if is_windows then
+        local temp_dir = os.getenv("TEMP") or os.getenv("TMP")
+        if temp_dir then
+            local history_path = utils.join_path(temp_dir, "mpv_epg_" .. state.history_file)
+            mp.msg.info("历史记录路径 (Windows临时目录): " .. history_path)
+            return history_path
+        end
+    end
+
+    -- 方法4: 使用脚本目录（最后备选）
+    local script_dir = mp.get_script_directory()
+    if script_dir then
+        local history_path = utils.join_path(script_dir, state.history_file)
+        mp.msg.info("历史记录路径 (脚本目录): " .. history_path)
+        return history_path
+    end
+
+    -- 最终备选：当前工作目录
+    mp.msg.warn("无法确定合适的目录，使用当前目录")
+    return state.history_file
+end
+
+-- 读取频道历史记录
+local function load_channel_history()
+    local history_path = get_history_file_path()
+    mp.msg.info("尝试加载历史记录文件: " .. history_path)
+
+    local dir = history_path:match("^(.*)[\\/]")
+    if dir then
+        mp.msg.info("目标目录: " .. dir)
+    end
+
+    local file = io.open(history_path, "r")
+    if file then
+        local content = file:read("*a")
+        file:close()
+        mp.msg.info("历史记录文件大小: " .. #content .. " 字节")
+        local success, data = pcall(utils.parse_json, content)
+        if success and type(data) == "table" then
+            state.channel_history = data
+            local count = 0
+            for k, v in pairs(data) do count = count + 1 end
+            mp.msg.info("频道历史记录已加载，共 " .. count .. " 个 m3u 文件的记录")
+        else
+            mp.msg.warn("频道历史记录文件格式错误: " .. tostring(data))
+            state.channel_history = {}
+        end
+    else
+        state.channel_history = {}
+        mp.msg.info("未找到历史记录文件，将创建新文件: " .. history_path)
+    end
+end
+
+-- 保存频道历史记录
+local function save_channel_history()
+    local history_path = get_history_file_path()
+    mp.msg.info("尝试保存历史记录到: " .. history_path)
+
+    local file, err = io.open(history_path, "w")
+    if file then
+        local content = utils.format_json(state.channel_history)
+        file:write(content)
+        file:close()
+        mp.msg.info("频道历史记录已保存成功: " .. history_path)
+    else
+        mp.msg.error("无法保存频道历史记录: " .. tostring(err))
+        mp.msg.error("目标路径: " .. history_path)
+    end
+end
+
+-- 获取 m3u 文件的唯一标识（使用文件路径的哈希）
+local function get_m3u_key(m3u_path)
+    -- 使用文件路径作为键，规范化路径格式
+    local normalized_path = m3u_path:gsub("\\", "/"):gsub("^file://", "")
+    return normalized_path
+end
+
+-- 保存当前播放的频道到历史记录
+local function save_current_channel_to_history()
+    if not state.m3u_path or state.m3u_path == "" then return end
+    if not state.current_channel or not state.current_channel.url then return end
+
+    local m3u_key = get_m3u_key(state.m3u_path)
+    state.channel_history[m3u_key] = {
+        url = state.current_channel.url,
+        name = state.current_channel.name,
+        group = state.current_channel.group,
+        timestamp = os.time()
+    }
+    save_channel_history()
+    mp.msg.info("已保存频道到历史记录: " .. state.current_channel.name)
+end
+
+-- 从历史记录加载上次播放的频道
+local function load_last_channel_from_history()
+    if not state.m3u_path or state.m3u_path == "" then return nil end
+
+    local m3u_key = get_m3u_key(state.m3u_path)
+    local history = state.channel_history[m3u_key]
+
+    if history and history.url then
+        mp.msg.info("从历史记录加载频道: " .. (history.name or "未知"))
+        return history
+    end
+
+    return nil
 end
 
 local function xmltv_to_utc(time_str)
@@ -326,6 +459,16 @@ local function parse_m3u(path)
     end
     state.is_loaded = true
     fetch_and_parse_epg_async()
+
+    -- 自动播放上次播放的频道
+    local last_channel = load_last_channel_from_history()
+    if last_channel and last_channel.url then
+        mp.msg.info("自动播放上次频道: " .. (last_channel.name or "未知"))
+        mp.add_timeout(0.5, function()
+            mp.commandv("loadfile", last_channel.url)
+        end)
+    end
+
     return true
 end
 
@@ -518,8 +661,13 @@ mp.observe_property("path", "string", function(name, path)
     for group_name, channels in pairs(state.groups) do
         for _, ch in ipairs(channels) do
             if ch.url == path or (path and path:find(ch.url, 1, true)) then
-                state.current_channel = ch
-                mp.msg.info("当前频道: " .. ch.name)
+                -- 只有当频道真正改变时才保存历史记录
+                if not state.current_channel or state.current_channel.url ~= ch.url then
+                    state.current_channel = ch
+                    mp.msg.info("当前频道: " .. ch.name)
+                    -- 保存到历史记录
+                    save_current_channel_to_history()
+                end
                 return
             end
         end
@@ -536,6 +684,7 @@ mp.observe_property("path", "string", function(name, path)
         if wd ~= "" and not clean_path:match("^/") and not clean_path:match("^%a+:") then
             clean_path = utils.join_path(wd, clean_path)
         end
+        state.m3u_path = clean_path  -- 保存 m3u 文件路径
         mp.osd_message("解析 M3U...", 2)
         if parse_m3u(clean_path) then
             mp.osd_message("IPTV 已加载！鼠标右键:选台菜单", 4)
@@ -544,6 +693,18 @@ mp.observe_property("path", "string", function(name, path)
 end)
 
 mp.msg.info("IPTV 脚本已加载: 鼠标右键=三级选台菜单 (分组 > 频道 > EPG)")
+
+-- 打印调试信息
+mp.msg.info("===== EPG 脚本初始化调试信息 =====")
+mp.msg.info("工作目录: " .. tostring(mp.get_property("working-directory", "未知")))
+mp.msg.info("配置目录: " .. tostring(mp.find_config_file("") or "未找到"))
+mp.msg.info("config-dir: " .. tostring(mp.get_property("config-dir", "未知")))
+mp.msg.info("脚本目录: " .. tostring(mp.get_script_directory() or "未知"))
+mp.msg.info("TEMP 环境变量: " .. tostring(os.getenv("TEMP") or "未设置"))
+mp.msg.info("==========================")
+
+-- 初始化：加载频道历史记录
+load_channel_history()
 
 -- 强制覆盖鼠标右键绑定，优先于 uosc 的暂停功能
 mp.set_key_bindings({

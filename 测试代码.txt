@@ -1,1 +1,0 @@
-mpv --msg-level=ffmpeg=no tv2_php.m3u
