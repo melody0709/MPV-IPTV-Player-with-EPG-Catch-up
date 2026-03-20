@@ -1,11 +1,14 @@
 # MPV IPTV Player with EPG & Catch-up
 
- 基于 mpv + uosc 5.12（已定制）的 IPTV 播放器，支持：
+基于 **mpv 播放器** 和 **uosc 5.12 UI 框架** 深度定制的 IPTV 播放器，专为直播电视和回看功能设计。
 
-- M3U 频道分组
-- EPG 节目单（x-tvg-url）
-- 回看（catchup-source）
-- 频道历史记忆（m3u 文件级别）
+## 核心功能
+
+- **三级滑动菜单**：分组 → 频道 → EPG节目单 的嵌套菜单结构
+- **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
+- **智能右键**：根据上下文（IPTV/普通视频）显示不同的右键菜单
+- **历史记录**：自动保存/恢复上次播放的频道
+- **多平台支持**：Windows/Linux/macOS，自带 curl 工具链
 
 ## 快速使用
 
@@ -16,13 +19,66 @@
    mpv tv.m3u
    ```
 
-## 目录说明
+## 技术栈
 
-- `mpv.conf`：全局 mpv 配置
-- `input.conf`：快捷键
-- `scripts/epg.lua`：IPTV EPG 主脚本
-- `scripts/uosc/`：定制 uosc 组件
-- `script-opts/epg.conf`：EPG 备用 URL 配置
+| 组件       | 技术            | 说明                      |
+| ---------- | --------------- | ------------------------- |
+| 播放器核心 | mpv             | 多媒体播放引擎            |
+| UI 框架    | uosc 5.12 (Lua) | 现代 OSC 界面，已定制扩展 |
+| EPG 处理   | Lua + XML       | 节目单解析和回看 URL 生成 |
+| 数据存储   | JSON            | 频道历史记录持久化        |
+
+## 文件结构
+
+```
+portable_config/
+├── 📄 CLAUDE.md              # AI 开发指南（开发者文档）
+├── 📄 UOSC_MODIFY_DIFF.md    # uosc 源码修改记录（重要！）
+├── 📄 mpv.conf               # mpv 配置文件
+├── 📄 input.conf             # 快捷键配置
+│
+├── 📁 scripts/
+│   ├── 📄 epg.lua            # 【核心】IPTV EPG 脚本
+│   ├── 📄 thumbfast.lua      # 缩略图生成（第三方）
+│   │
+│   ├── 📁 bin/
+│   │   └── 📄 curl.exe       # curl 下载工具（Windows）
+│   │
+│   └── 📁 uosc/              # 【修改区域】uosc 5.12 源码
+│       ├── 📄 main.lua       # ⚠️ 已修改（消息处理器）
+│       ├── 📁 lib/
+│       │   ├── 📄 menus.lua  # ⚠️ 已修改（toggle_menu_with_items）
+│       │   └── 📄 ...        # 其他未修改文件
+│       ├── 📁 elements/
+│       │   ├── 📄 Menu.lua   # ⚠️ 已修改（activate_selected_item）
+│       │   └── 📄 ...        # 其他未修改文件
+│       └── 📁 bin/           # ziggy 二进制文件
+│
+├── 📁 script-opts/           # 脚本配置文件
+│   └── 📄 epg.conf           # EPG 配置（epg_download_url）
+│
+└── 📁 fonts/                 # 字体文件
+```
+
+## 关键修改点（uosc 源码修改）
+
+本项目对 uosc 5.12 源码进行了三处关键修改，以支持 IPTV 三级菜单功能：
+
+1. **`scripts/uosc/main.lua`** - 新增 `expand-submenu` 消息处理器，增强 `open-menu` 支持 `anchor_x`/`anchor_offset`
+2. **`scripts/uosc/elements/Menu.lua`** - 修改 `activate_selected_item` 方法，支持同时执行 value 和展开子菜单
+3. **`scripts/uosc/lib/menus.lua`** - 修改 `toggle_menu_with_items` 函数，确保任何类型菜单都能正确关闭
+
+详细修改记录请查看 `UOSC_MODIFY_DIFF.md` 文件。
+
+## IPTV 核心脚本
+
+**`scripts/epg.lua`** 是主要业务逻辑，包含：
+
+- M3U/M3U8 文件解析
+- EPG XML 数据下载和解析（支持 gzip 压缩）
+- 三级菜单数据结构构建
+- 回看 URL 生成（支持 OK影视、酷9、APTV 三种时间模板）
+- 频道历史记录管理
 
 ## 核心功能
 
@@ -63,50 +119,18 @@
 ## 运行日志调试
 
 ```bash
- mpv --msg-level=all=info,epg=trace tv.m3u
+ mpv --msg-level=ffmpeg=no  tv.m3u
 ```
 
  关注 `epg.lua` 输出：历史记录路径、EPG 下载状态、自动恢复频道
 
 ## 常见问题
 
-- 无 EPG：确认 `x-tvg-url` 可访问
+- 无 EPG：确认 `x-tvg-url` 可访问,修改script-opts\epg.conf 中的下载连接
 - 无回看：检查 `catchup-source` 时间模板
 - 无历史记忆：确认脚本有写权限
 
-## 版本更新
-
-- v5.2 (2026-03-20): 新增频道历史记忆、从历史自动恢复
-- v5.1 (2026-01-18): EPG 时间解析修复
-- v5.0 (2026-01-15): 首次发布
-
-## 许可证
-
- MIT
-
-### EPG 节目单菜单
-
-```
-📅 节目单
-
-今天 08:00 朝闻天下        [回看] ⏪
-今天 09:00 新闻直播间      [回看] ⏪
-今天 12:00 新闻30分        [直播中] 🔴
-今天 19:00 新闻联播        [预告]
-```
-
 ## ⚙️ 配置说明
-
-### 脚本配置（epg.lua 内）
-
-### 快捷键绑定
-
-在 `mpv.conf` 中添加或修改：
-
-```ini
-# IPTV 快捷键
-F8 script-binding epg/show-iptv-menu  # 打开频道菜单
-```
 
 ### EPG 下载 URL（可选）
 
@@ -124,19 +148,14 @@ epg_download_url=http://your-epg-source.com/epg.xml
 
 ### EPG 无法加载
 
-1. **检查网络连接**
-
-   ```bash
-   curl -I http://your-epg-server/t.xml
-   ```
-2. **检查 EPG URL 格式**
+1. **检查 EPG URL 格式**
 
    - 确保 M3U 中的 `x-tvg-url` 是可访问的 XML 文件
    - 文件编码应为 UTF-8
-3. **查看 mpv 日志**
+2. **查看 mpv 日志**
 
    ```bash
-   mpv your-playlist.m3u --log-file=mpv.log
+   mpv --msg-level=ffmpeg=no tv.m3u
    ```
 
    搜索 `epg.lua` 相关日志
@@ -153,10 +172,49 @@ epg_download_url=http://your-epg-source.com/epg.xml
 
    - 确保 EPG 中的 `start` 和 `stop` 时间是标准 XMLTV 格式
 
+### 修改类型标记
+
+| 标记         | 用途            | 示例                                         |
+| ------------ | --------------- | -------------------------------------------- |
+| `【修改】` | 修改现有逻辑    | `-- 【修改】支持同时执行value和展开子菜单` |
+| `【新增】` | 新增函数/代码块 | `-- 【新增】expand-submenu 消息处理器`     |
+| `【删除】` | 删除原始代码    | `-- 【删除】原代码不支持xxx功能`           |
+
+### 必须同步更新的文件
+
+**当修改以下文件时，必须同步更新 `UOSC_MODIFY_DIFF.md`：**
+
+1. `scripts/uosc/main.lua`
+2. `scripts/uosc/elements/Menu.lua`
+3. `scripts/uosc/lib/menus.lua`
+
+### 重要注意事项
+
+1. **uosc 源码修改**
+
+   - **不要修改未标记的文件**，除非有充分理由
+   - **修改 uosc 源码后必须更新 `UOSC_MODIFY_DIFF.md`**
+   - **保留原始注释**，在附近添加中文修改说明
+   - **向后兼容**：确保修改不破坏原有功能
+2. **IPTV 功能扩展**
+
+   - **优先在 `epg.lua` 中实现新功能**
+   - **利用现有 API**：`open-menu`、`expand-submenu`、`select-menu-item`
+   - **考虑多平台兼容**：Windows PowerShell 和 Linux/macOS gzip 解压
+   - **错误处理**：网络请求失败、文件读写权限、数据解析异常
+3. **升级 uosc 版本**
+
+   - **备份修改**：复制 `UOSC_MODIFY_DIFF.md`，导出 git diff
+   - **替换文件**：用新版本替换 `scripts/uosc/` 目录
+   - **重新应用修改**：参考 `UOSC_MODIFY_DIFF.md` 逐个文件对比
+   - **API 兼容性检查**：验证 `open-menu`、`expand-submenu` 接口
+   - **功能测试**：IPTV 菜单、频道切换、EPG 展开、回看功能
+
 ## 📝 更新日志
 
-### v5.2 (2026-03-19)
+### v1.2 (2026-03-20)
 
+- ✅ **新增频道历史记忆功能** - 自动保存/恢复上次播放的频道
 - ✅ **增强回看功能兼容性** - 新增支持三种时间参数格式：
   - 标准回看模板：`${utc:yyyyMMddHHmmss}` 和 `${utcend:yyyyMMddHHmmss}`
   - KU9回看模板：`${(b)yyyyMMddHHmmss|UTC}` 和 `${(e)yyyyMMddHHmmss|UTC}`
@@ -164,19 +222,25 @@ epg_download_url=http://your-epg-source.com/epg.xml
 - ✅ 简化时间参数替换函数，移除调试信息输出
 - ✅ 更新文档，提供完整的时间参数格式说明
 
-### v5.1 (2026-01-18)
+### v1.1 (2026-03-19)
 
 - ✅ 修复图标杂点问题 - 移除远程 URL 图标，使用本地 Material Icon
 - ✅ 优化 EPG 时间解析，支持更多时区格式
 - ✅ 改进回看 URL 生成逻辑
 
-### v5.0 (2026-01-15)
+### v1.0 (2026-03-18)
 
 - ✅ 初始版本发布
 - ✅ 支持 M3U 分组解析
 - ✅ 支持 EPG 节目单
 - ✅ 支持回看功能
 - ✅ 集成 uosc 菜单系统
+
+## 版本信息
+
+- **基础版本**：uosc 5.12.0
+- **IPTV 版本**：V5.2（2026-03-20）
+- **最后更新**：2026-03-20
 
 ## 🤝 致谢
 
