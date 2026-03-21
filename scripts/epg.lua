@@ -21,7 +21,8 @@ local state = {
     is_loaded = false,
     current_channel = nil,
     history_file = "epg_history.json",
-    channel_history = {}
+    channel_history = {},
+    auto_playing = false  -- 标记是否正在自动播放历史频道
 }
 
 -- ==================== 工具函数（保持原样） ====================
@@ -222,7 +223,7 @@ local function format_display_time(time_str)
 end
 
 local function parse_epg_string(xml_str)
-    mp.msg.info("EPG 内容预览 (前500字符): " .. xml_str:sub(1,500))
+    mp.msg.info("EPG 内容预览 (前300字符): " .. xml_str:sub(1,300))
     state.epg_data = {}
     local count = 0
     xml_str = xml_str:gsub("\n", " ")
@@ -464,8 +465,13 @@ local function parse_m3u(path)
     local last_channel = load_last_channel_from_history()
     if last_channel and last_channel.url then
         mp.msg.info("自动播放上次频道: " .. (last_channel.name or "未知"))
+        state.auto_playing = true  -- 标记正在自动播放
         mp.add_timeout(0.5, function()
             mp.commandv("loadfile", last_channel.url)
+            -- 播放命令发送后，延迟清除标记（给路径变化监听器足够时间）
+            mp.add_timeout(1.0, function()
+                state.auto_playing = false
+            end)
         end)
     end
 
@@ -630,13 +636,13 @@ function show_iptv_menu()
     -- 如果有当前频道，处理选中/展开逻辑
     if current_group_idx and current_channel_idx and state.current_channel then
         -- 延迟一点执行，确保菜单已经渲染
-        mp.add_timeout(0.1, function()
+        mp.add_timeout(0.01, function()
             if current_has_epg and current_epg_idx then
                 -- 有EPG：展开EPG子菜单，并选中当前时间点的节目
                 local channel_id = "channel_" .. state.current_channel.name
                 mp.commandv("script-message-to", "uosc", "expand-submenu", channel_id)
                 -- 延迟选中当前时间点的节目
-                mp.add_timeout(0.15, function()
+                mp.add_timeout(0.01, function()
                     mp.commandv("script-message-to", "uosc", "select-menu-item", "iptv_menu", tostring(current_epg_idx), channel_id)
                 end)
             else
@@ -658,6 +664,11 @@ mp.set_key_bindings({
 -- 跟踪当前播放的频道
 mp.observe_property("path", "string", function(name, path)
     if not path then return end
+    -- 跳过自动播放过程中的路径变化
+    if state.auto_playing then
+        mp.msg.verbose("自动播放中，跳过历史记录保存: " .. tostring(path))
+        return
+    end
     for group_name, channels in pairs(state.groups) do
         for _, ch in ipairs(channels) do
             if ch.url == path or (path and path:find(ch.url, 1, true)) then
