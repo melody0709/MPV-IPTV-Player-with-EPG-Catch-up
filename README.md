@@ -4,9 +4,10 @@
 
 ## 核心功能
 
-- **三级滑动菜单**：分组 → 频道 → EPG节目单 的嵌套菜单结构
+- **三级滑动菜单 + 频道搜索**：`F8` 顶部搜索框只匹配频道名，不会匹配 EPG 时间或节目标题；支持中文、拼音全拼和首字母搜索，如 `广东` / `guangdong` / `gd`，并按连续频道词边界匹配，例如 `dianying` / `dy` 可匹配 `电影`
 - **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
 - **EPG 回看搜索 (F9)**：跨频道搜索所有可回看的节目，按时间倒序排列
+- **手动强制刷新 EPG (Shift+F9)**：忽略缓存立即重新下载节目单，也可从 IPTV 菜单直接触发
 - **智能右键**：根据上下文（IPTV/普通视频）显示不同的右键菜单
 - **历史记录**：自动保存/恢复上次播放的频道
 - **多平台支持**：Windows/Linux/macOS，自带 curl 工具链
@@ -115,6 +116,8 @@ portable_config/
 
 ```ini
  epg_download_url=http://your-epg-source.com/epg.xml
+ epg_cache_refresh_start=00:04
+ epg_cache_refresh_interval_hours=7
 ```
 
 ## 运行日志调试
@@ -125,11 +128,15 @@ portable_config/
 
  关注 `epg.lua` 输出：历史记录路径、EPG 下载状态、自动恢复频道
 
+按 `F8` 打开 IPTV 菜单后，顶部会直接显示搜索框，可输入频道名快速筛选；搜索结果只按频道名匹配，并支持中文、拼音全拼和首字母。
+
 ## 常见问题
 
 - 无 EPG：确认 `x-tvg-url` 可访问,修改script-opts\epg.conf 中的下载连接
 - 无回看：检查 `catchup-source` 时间模板
 - 无历史记忆：确认脚本有写权限
+- 想立即更新节目单：按 `Shift+F9`，或打开 `F8` IPTV 菜单后选择 `强制刷新 EPG`
+- 想快速找频道：按 `F8` 后直接输入频道名，菜单会即时筛选频道结果，不会匹配 EPG 节目时间或标题；例如 `gd` 和 `guangdong` 都能匹配 `广东`，`dianying` 和 `dy` 都能匹配 `电影`，但不会因为 `jingdian` 里恰好含有 `gd` 就误命中 `经典` 类频道
 
 ## ⚙️ 配置说明
 
@@ -143,7 +150,19 @@ portable_config/
 # EPG 下载连接配置
 # 当此参数存在时，优先使用该连接下载 EPG，而不是 M3U 表头中的 x-tvg-url
 epg_download_url=http://your-epg-source.com/epg.xml
+
+# EPG 缓存刷新时间配置
+# 从每天 00:04 开始，按 7 小时间隔生成当天刷新点：00:04 / 07:04 / 14:04 / 21:04
+epg_cache_refresh_start=00:04
+epg_cache_refresh_interval_hours=7
 ```
+
+### EPG 缓存刷新规则
+
+- `epg_cache_refresh_start`：每天首个刷新点，格式为 `HH:MM`
+- `epg_cache_refresh_interval_hours`：当天后续刷新点的小时间隔
+- 默认配置会得到 `00:04 / 07:04 / 14:04 / 21:04` 四个刷新点
+- 如果配置缺失或格式错误，脚本会自动回退到旧的固定时段规则，避免缓存失效
 
 ## 🔧 故障排除
 
@@ -213,7 +232,7 @@ epg_download_url=http://your-epg-source.com/epg.xml
 
 ## 📝 更新日志
 
-### v1.3 (2026-03-21)
+### v1.4 (2026-03-21)
 
 - ✅ **新增 EPG 回看搜索功能 (F9)** - 跨频道搜索所有可回看的节目
   - 支持 palette 模式搜索框，立即激活输入
@@ -228,6 +247,9 @@ epg_download_url=http://your-epg-source.com/epg.xml
   - APTV回看模板：`${(b)yyyyMMddHHmmss:utc}` 和 `${(e)yyyyMMddHHmmss:utc}`
 - ✅ 简化时间参数替换函数，移除调试信息输出
 - ✅ 更新文档，提供完整的时间参数格式说明
+- ✅ **新增可配置 EPG 缓存刷新时间** - 可通过 `script-opts/epg.conf` 调整刷新起点和间隔，默认仍对应 `00:04 / 07:04 / 14:04 / 21:04`
+- ✅ **手动强制刷新** - `Shift+F9` 
+- ✅ **优化 IPTV 菜单搜索交互** - 支持频道名中文/拼音/首字母搜索，并让自动展开的 EPG 子菜单将键盘输入转发到根菜单搜索框
 
 ### v1.1 (2026-03-19)
 
@@ -246,7 +268,7 @@ epg_download_url=http://your-epg-source.com/epg.xml
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.3（2026-03-21）
+- **IPTV 版本**：V1.4（2026-03-21）
 - **最后更新**：2026-03-21
 
 ## 🤝 致谢

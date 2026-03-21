@@ -231,6 +231,47 @@ end
 
 **用途：** 实现 IPTV 三级菜单的交互逻辑——点击频道直接播放（执行 value），同时可以展开右侧的 EPG 子菜单。
 
+#### 修改点 4：键盘搜索输入可转发到指定菜单
+
+**位置：** 约第 444 行、1080-1160 行（`get_menu` 附近及搜索输入处理区域）
+
+**修改原因：** IPTV 菜单打开后会自动钻进当前 `EPG` 子菜单，用户希望保留这个视觉定位，但键盘输入仍然优先触发根菜单的“搜索频道”，而不是对子菜单执行搜索。
+
+**修改内容：**
+
+1. **新增 `get_search_target_menu()`：**
+```lua
+-- 【修改】允许子菜单将键盘搜索输入转发到指定菜单（例如 IPTV 根菜单搜索框）
+function Menu:get_search_target_menu(menu_id)
+    local menu = self:get_menu(menu_id)
+    if not menu then return nil end
+
+    local current = menu
+    while current do
+        local target_id = current.search_input_target
+        if target_id == 'root' then return self.root end
+        if type(target_id) == 'string' and self.by_id[target_id] then
+            return self.by_id[target_id]
+        end
+        current = current.parent_menu
+    end
+
+    return menu
+end
+```
+
+2. **修改 `search_text_input` / `search_query_backspace` / `search_query_delete`：**
+```lua
+-- 【修改】文本输入优先转发到指定搜索目标（例如 IPTV 根菜单搜索框）
+local menu = self:get_search_target_menu()
+if not menu or (not menu.search and menu.search_style == 'disabled') then return end
+
+if not menu.search then self:search_start(menu.id) end
+self:search_query_insert(key_text, menu.id)
+```
+
+**用途：** 让 IPTV 菜单在保留“自动展开当前 EPG 子菜单”的同时，用户一按键盘仍然直接进入根菜单的频道搜索。
+
 ---
 
 ### 3. `scripts/uosc/lib/menus.lua`
@@ -497,6 +538,7 @@ mp.osd_message("提示信息", 3)  -- 显示3秒
 
 | 版本   | 日期       | 修改内容                                                     |
 | ------ | ---------- | ------------------------------------------------------------ |
+| V1.4   | 2026-03-21 | 新增 IPTV 菜单频道搜索（中文/拼音/首字母），并让自动展开的 EPG 子菜单将键盘搜索转发到根菜单 |
 | V1.3   | 2026-03-21 | 新增 EPG 回看搜索菜单 (F9)，搜索框光标左对齐优化，`search_key` 支持 |
 | V1.2   | 2026-03-20 | 三级滑动菜单结构重构，新增频道历史记忆，EPG回看功能完善      |
 | V1.1   | -          | 初始版本，基础 M3U/EPG 支持                                  |

@@ -443,6 +443,26 @@ function Menu:fadeout(callback) self:tween_property('opacity', 1, 0, callback) e
 ---@return MenuStack | nil
 function Menu:get_menu(menu_id) return menu_id == nil and self.current or self.by_id[menu_id] end
 
+-- 【修改】允许子菜单将键盘搜索输入转发到指定菜单（例如 IPTV 根菜单搜索框）
+---@param menu_id? string
+---@return MenuStack | nil
+function Menu:get_search_target_menu(menu_id)
+	local menu = self:get_menu(menu_id)
+	if not menu then return nil end
+
+	local current = menu
+	while current do
+		local target_id = current.search_input_target
+		if target_id == 'root' then return self.root end
+		if type(target_id) == 'string' and self.by_id[target_id] then
+			return self.by_id[target_id]
+		end
+		current = current.parent_menu
+	end
+
+	return menu
+end
+
 function Menu:get_first_active_index(menu_id)
 	local menu = self:get_menu(menu_id)
 	if not menu then return end
@@ -1074,8 +1094,10 @@ end
 ---@param event? string
 ---@param word_mode? boolean Delete by words.
 function Menu:search_query_backspace(event, word_mode)
-	local search = self.current.search
-	if not search then return end
+	-- 【修改】退格优先作用于指定搜索目标，而不是当前激活的 EPG 子菜单
+	local target_menu = self:get_search_target_menu()
+	local search = target_menu and target_menu.search
+	if not target_menu or not search then return end
 
 	local cursor, old_query = search.cursor, search.query
 	local head, tail = string.sub(old_query, 1, cursor), string.sub(old_query, cursor + 1)
@@ -1094,14 +1116,14 @@ function Menu:search_query_backspace(event, word_mode)
 	if new_query ~= old_query then
 		search.query = new_query
 		search.cursor = math.max(0, cursor)
-		self:search_trigger()
+		self:search_trigger(target_menu.id)
 	end
 
 	if #new_query == 0 then
-		local is_palette = self.current.search_style == 'palette'
+		local is_palette = target_menu.search_style == 'palette'
 		if not is_palette and self.type_to_search then
-			self:search_cancel()
-		elseif is_palette and event ~= 'repeat' then
+			self:search_cancel(target_menu.id)
+		elseif is_palette and event ~= 'repeat' and target_menu == self.current then
 			self:back()
 		end
 	end
@@ -1110,8 +1132,10 @@ end
 ---@param event? string
 ---@param word_mode? boolean Delete by words.
 function Menu:search_query_delete(event, word_mode)
-	local search = self.current.search
-	if not search then return end
+	-- 【修改】Delete 键优先作用于指定搜索目标，而不是当前激活的 EPG 子菜单
+	local target_menu = self:get_search_target_menu()
+	local search = target_menu and target_menu.search
+	if not target_menu or not search then return end
 
 	local cursor, old_query = search.cursor, search.query
 	local head, tail = string.sub(old_query, 1, cursor), string.sub(old_query, cursor + 1)
@@ -1131,22 +1155,23 @@ function Menu:search_query_delete(event, word_mode)
 	if new_query ~= old_query then
 		search.query = new_query
 		search.cursor = #head
-		self:search_trigger()
+		self:search_trigger(target_menu.id)
 	end
 
 	if #new_query == 0 then
-		local is_palette = self.current.search_style == 'palette'
+		local is_palette = target_menu.search_style == 'palette'
 		if not is_palette and self.type_to_search then
-			self:search_cancel()
-		elseif is_palette and event ~= 'repeat' then
+			self:search_cancel(target_menu.id)
+		elseif is_palette and event ~= 'repeat' and target_menu == self.current then
 			self:back()
 		end
 	end
 end
 
 function Menu:search_text_input(info)
-	local menu = self.current
-	if not menu.search and menu.search_style == 'disabled' then return end
+	-- 【修改】文本输入优先转发到指定搜索目标（例如 IPTV 根菜单搜索框）
+	local menu = self:get_search_target_menu()
+	if not menu or (not menu.search and menu.search_style == 'disabled') then return end
 	if info.event ~= 'up' then
 		local key_text = info.key_text
 		if not key_text then
@@ -1155,8 +1180,8 @@ function Menu:search_text_input(info)
 			if not key_text then return end
 			if key_text == 'DEC' then key_text = '.' end
 		end
-		if not menu.search then self:search_start() end
-		self:search_query_insert(key_text)
+		if not menu.search then self:search_start(menu.id) end
+		self:search_query_insert(key_text, menu.id)
 	end
 end
 

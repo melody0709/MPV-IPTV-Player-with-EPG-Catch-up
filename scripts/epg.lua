@@ -1,5 +1,5 @@
 --[[
-  mpv + uosc 5.12 IPTV 脚本 V1.3
+    mpv + uosc 5.12 IPTV 脚本 V1.4
   重构：三级滑动菜单结构 - 分组 > 频道 > EPG回看
 ]]
 
@@ -8,7 +8,9 @@ local utils = require 'mp.utils'
 local opt = require 'mp.options'
 
 local options = {
-    epg_download_url = ""
+    epg_download_url = "",
+    epg_cache_refresh_start = "00:04",
+    epg_cache_refresh_interval_hours = 7
 }
 opt.read_options(options)
 
@@ -25,12 +27,271 @@ local state = {
     auto_playing = false  -- 标记是否正在自动播放历史频道
 }
 
+local build_main_menu
+local build_channel_epg_items
+local channel_search_romanization = nil
+local channel_search_cache = {}
+
 -- ==================== 工具函数（保持原样） ====================
 
 -- 去除字符串前后空白字符
 local function trim(s)
     if not s then return "" end
     return s:match("^%s*(.-)%s*$")
+end
+
+local function utf8_char_bytes(str, index)
+    local char_byte = str:byte(index)
+    local max_bytes = #str - index + 1
+    if char_byte < 0xC0 then
+        return math.min(max_bytes, 1)
+    elseif char_byte < 0xE0 then
+        return math.min(max_bytes, 2)
+    elseif char_byte < 0xF0 then
+        return math.min(max_bytes, 3)
+    elseif char_byte < 0xF8 then
+        return math.min(max_bytes, 4)
+    end
+    return math.min(max_bytes, 1)
+end
+
+local function utf8_iter(str)
+    local byte_start = 1
+    return function()
+        local start_index = byte_start
+        if #str < start_index then return nil end
+        local byte_count = utf8_char_bytes(str, start_index)
+        byte_start = start_index + byte_count
+        return start_index, str:sub(start_index, start_index + byte_count - 1)
+    end
+end
+
+local function load_channel_search_romanization()
+    if channel_search_romanization ~= nil then
+        return channel_search_romanization or nil
+    end
+
+    local char_conv_path = mp.command_native({"expand-path", "~~home/scripts/uosc/char-conv/zh.json"})
+    if not char_conv_path or char_conv_path == "" then
+        channel_search_romanization = false
+        return nil
+    end
+
+    local file = io.open(char_conv_path, "r")
+    if not file then
+        channel_search_romanization = false
+        return nil
+    end
+
+    local json_content = file:read("*a")
+    file:close()
+
+    local success, data = pcall(utils.parse_json, json_content)
+    if not success or type(data) ~= "table" then
+        channel_search_romanization = false
+        return nil
+    end
+
+    local romanization = {}
+    for roman, chars in pairs(data) do
+        for _, char in utf8_iter(chars) do
+            romanization[char] = roman
+        end
+    end
+
+    channel_search_romanization = romanization
+    return channel_search_romanization
+end
+
+local function build_channel_search_terms(name)
+    if channel_search_cache[name] then
+        return channel_search_cache[name]
+    end
+
+    local normalized_name = (name or ""):lower()
+    local romanization = load_channel_search_romanization()
+    local cjk_units = {}
+    local ascii_buffer = {}
+    local full_sequences = {
+        forward = {},
+        backward = {},
+    }
+    local initial_sequences = {
+        forward = {},
+        backward = {},
+    }
+
+    local function append_ascii_token()
+        if #ascii_buffer == 0 then return end
+        local token = table.concat(ascii_buffer)
+        full_sequences.forward[#full_sequences.forward + 1] = token
+        full_sequences.backward[#full_sequences.backward + 1] = token
+        initial_sequences.forward[#initial_sequences.forward + 1] = token
+        initial_sequences.backward[#initial_sequences.backward + 1] = token
+        ascii_buffer = {}
+    end
+
+    local function append_cjk_tokens(units)
+        if #units == 0 then return end
+
+        local function append_grouped_tokens(target_full, target_initials, reverse)
+            local start_index = reverse and #units or 1
+            local step = reverse and -2 or 2
+
+            while reverse and start_index > 0 or (not reverse and start_index <= #units) do
+                local end_index
+                if reverse then
+                    end_index = start_index
+                    start_index = math.max(1, start_index - 1)
+                else
+                    end_index = math.min(#units, start_index + 1)
+                end
+
+                local group_start = reverse and start_index or (end_index - ((end_index - start_index >= 1) and 1 or 0))
+                if reverse then
+                    group_start = start_index
+                else
+                    group_start = end_index - ((end_index - start_index >= 1) and 1 or 0)
+                end
+
+                local roman_parts = {}
+                local initial_parts = {}
+                for idx = group_start, end_index do
+                    local syllable = units[idx]
+                    roman_parts[#roman_parts + 1] = syllable
+                    initial_parts[#initial_parts + 1] = syllable:sub(1, 1)
+                end
+                table.insert(target_full, 1, table.concat(roman_parts))
+                table.insert(target_initials, 1, table.concat(initial_parts))
+
+                if reverse then
+                    start_index = start_index - 2
+                else
+                    start_index = start_index + 2
+                end
+            end
+        end
+
+        local forward_full = {}
+        local forward_initials = {}
+        local index = 1
+        while index <= #units do
+            local end_index = math.min(#units, index + 1)
+            local roman_parts = {}
+            local initial_parts = {}
+            for idx = index, end_index do
+                roman_parts[#roman_parts + 1] = units[idx]
+                initial_parts[#initial_parts + 1] = units[idx]:sub(1, 1)
+            end
+            forward_full[#forward_full + 1] = table.concat(roman_parts)
+            forward_initials[#forward_initials + 1] = table.concat(initial_parts)
+            index = index + 2
+        end
+
+        local backward_full = {}
+        local backward_initials = {}
+        local reverse_groups = {}
+        local reverse_initials_groups = {}
+        local reverse_index = #units
+        while reverse_index >= 1 do
+            local start_index = math.max(1, reverse_index - 1)
+            local roman_parts = {}
+            local initial_parts = {}
+            for idx = start_index, reverse_index do
+                roman_parts[#roman_parts + 1] = units[idx]
+                initial_parts[#initial_parts + 1] = units[idx]:sub(1, 1)
+            end
+            table.insert(reverse_groups, 1, table.concat(roman_parts))
+            table.insert(reverse_initials_groups, 1, table.concat(initial_parts))
+            reverse_index = start_index - 1
+        end
+        backward_full = reverse_groups
+        backward_initials = reverse_initials_groups
+
+        for _, token in ipairs(forward_full) do
+            full_sequences.forward[#full_sequences.forward + 1] = token
+        end
+        for _, token in ipairs(forward_initials) do
+            initial_sequences.forward[#initial_sequences.forward + 1] = token
+        end
+        for _, token in ipairs(backward_full) do
+            full_sequences.backward[#full_sequences.backward + 1] = token
+        end
+        for _, token in ipairs(backward_initials) do
+            initial_sequences.backward[#initial_sequences.backward + 1] = token
+        end
+    end
+
+    local function flush_buffers()
+        append_ascii_token()
+        if #cjk_units > 0 then
+            append_cjk_tokens(cjk_units)
+            cjk_units = {}
+        end
+    end
+
+    for _, char in utf8_iter(normalized_name) do
+        local mapped = romanization and romanization[char] or nil
+        if mapped then
+            append_ascii_token()
+            cjk_units[#cjk_units + 1] = mapped:lower()
+        elseif char:match("[a-z0-9]") then
+            if #cjk_units > 0 then
+                append_cjk_tokens(cjk_units)
+                cjk_units = {}
+            end
+            ascii_buffer[#ascii_buffer + 1] = char
+        else
+            flush_buffers()
+        end
+    end
+    flush_buffers()
+
+    local search_terms = {
+        name = normalized_name,
+        full_sequences = {full_sequences.forward, full_sequences.backward},
+        initial_sequences = {initial_sequences.forward, initial_sequences.backward},
+    }
+    channel_search_cache[name] = search_terms
+    return search_terms
+end
+
+local function token_sequences_match_query(token_sequences, query)
+    if not token_sequences then
+        return false
+    end
+
+    for _, token_sequence in ipairs(token_sequences) do
+        if token_sequence and #token_sequence > 0 then
+            for start_index = 1, #token_sequence do
+                local candidate = table.concat(token_sequence, "", start_index)
+                if candidate:find(query, 1, true) == 1 then
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
+
+local function channel_name_matches_query(name, query)
+    local normalized_query = trim(query or ""):lower()
+    if normalized_query == "" then
+        return false
+    end
+
+    local search_terms = build_channel_search_terms(name)
+    if search_terms.name:find(normalized_query, 1, true) then
+        return true
+    end
+    if token_sequences_match_query(search_terms.full_sequences, normalized_query) then
+        return true
+    end
+    if token_sequences_match_query(search_terms.initial_sequences, normalized_query) then
+        return true
+    end
+    return false
 end
 
 -- ==================== EPG 缓存相关函数 ====================
@@ -76,9 +337,7 @@ local function get_epg_cache_path()
     return utils.join_path(cache_dir, "epg_" .. url_hash .. ".xml")
 end
 
--- 获取当前周期起始时间（00:02, 07:02, 14:02, 21:02）
--- 返回该起始时间的 Unix 时间戳（本地时间）
-local function get_current_cycle_start()
+local function get_legacy_cycle_start()
     local now = os.time()
     local now_table = os.date("*t", now)
     local current_minutes = now_table.hour * 60 + now_table.min
@@ -110,7 +369,88 @@ local function get_current_cycle_start()
     return os.time(start_table)
 end
 
--- 检查缓存是否对应当前周期（缓存修改时间晚于周期起始+2分钟）
+local function parse_refresh_time(value)
+    local hour_str, minute_str = tostring(value or ""):match("^(%d%d?):(%d%d)$")
+    if not hour_str or not minute_str then
+        return nil
+    end
+
+    local hour = tonumber(hour_str)
+    local minute = tonumber(minute_str)
+    if not hour or not minute or hour < 0 or hour > 23 or minute < 0 or minute > 59 then
+        return nil
+    end
+
+    return hour, minute
+end
+
+local function get_configured_refresh_schedule()
+    local start_hour, start_minute = parse_refresh_time(options.epg_cache_refresh_start)
+    local interval_hours = tonumber(options.epg_cache_refresh_interval_hours)
+    if not start_hour or not interval_hours or interval_hours <= 0 or interval_hours >= 24 then
+        return nil
+    end
+
+    interval_hours = math.floor(interval_hours)
+    local refresh_minutes = {}
+    local current_minutes = start_hour * 60 + start_minute
+    while current_minutes < 24 * 60 do
+        refresh_minutes[#refresh_minutes + 1] = current_minutes
+        current_minutes = current_minutes + interval_hours * 60
+    end
+
+    if #refresh_minutes == 0 then
+        return nil
+    end
+
+    return {
+        start_hour = start_hour,
+        start_minute = start_minute,
+        interval_hours = interval_hours,
+        refresh_minutes = refresh_minutes,
+    }
+end
+
+local function get_current_cycle_refresh_time(schedule)
+    if not schedule then
+        return nil
+    end
+
+    local now = os.time()
+    local now_table = os.date("*t", now)
+    local current_minutes = now_table.hour * 60 + now_table.min
+    local selected_minutes = schedule.refresh_minutes[1]
+    local use_previous_day = current_minutes < selected_minutes
+
+    if not use_previous_day then
+        for i = 2, #schedule.refresh_minutes do
+            if current_minutes >= schedule.refresh_minutes[i] then
+                selected_minutes = schedule.refresh_minutes[i]
+            else
+                break
+            end
+        end
+    else
+        selected_minutes = schedule.refresh_minutes[#schedule.refresh_minutes]
+    end
+
+    local refresh_table = {
+        year = now_table.year,
+        month = now_table.month,
+        day = now_table.day,
+        hour = math.floor(selected_minutes / 60),
+        min = selected_minutes % 60,
+        sec = 0,
+    }
+
+    local refresh_time = os.time(refresh_table)
+    if use_previous_day then
+        refresh_time = refresh_time - 24 * 60 * 60
+    end
+
+    return refresh_time, selected_minutes
+end
+
 local function is_cache_valid(cache_path)
     local file = io.open(cache_path, "r")
     if not file then
@@ -127,16 +467,29 @@ local function is_cache_valid(cache_path)
     end
     
     local cache_mtime = file_info.mtime
-    local cycle_start = get_current_cycle_start()
-    local valid_after = cycle_start + 120  -- 周期起始后2分钟（00:04, 07:04, 14:04, 21:04）
     local now = os.time()
-    
-    mp.msg.verbose(string.format("缓存时间检查: 缓存修改=%s, 周期起始=%s, 有效时间=%s, 当前=%s",
-        os.date("%Y-%m-%d %H:%M:%S", cache_mtime),
-        os.date("%Y-%m-%d %H:%M:%S", cycle_start),
-        os.date("%Y-%m-%d %H:%M:%S", valid_after),
-        os.date("%Y-%m-%d %H:%M:%S", now)))
-    
+
+    local valid_after
+    local schedule = get_configured_refresh_schedule()
+    if schedule then
+        valid_after = get_current_cycle_refresh_time(schedule)
+        mp.msg.verbose(string.format("缓存时间检查(配置): 缓存修改=%s, 当前周期刷新点=%s, 当前=%s, 配置=%s / %d小时",
+            os.date("%Y-%m-%d %H:%M:%S", cache_mtime),
+            os.date("%Y-%m-%d %H:%M:%S", valid_after),
+            os.date("%Y-%m-%d %H:%M:%S", now),
+            options.epg_cache_refresh_start,
+            schedule.interval_hours))
+    else
+        local cycle_start = get_legacy_cycle_start()
+        valid_after = cycle_start + 120
+        mp.msg.warn("EPG 刷新配置无效，已回退到旧的固定时段规则")
+        mp.msg.verbose(string.format("缓存时间检查(旧规则): 缓存修改=%s, 周期起始=%s, 有效时间=%s, 当前=%s",
+            os.date("%Y-%m-%d %H:%M:%S", cache_mtime),
+            os.date("%Y-%m-%d %H:%M:%S", cycle_start),
+            os.date("%Y-%m-%d %H:%M:%S", valid_after),
+            os.date("%Y-%m-%d %H:%M:%S", now)))
+    end
+
     if cache_mtime >= valid_after then
         mp.msg.info("缓存有效: 修改时间 " .. os.date("%H:%M:%S", cache_mtime) .. 
                     " 晚于当前周期有效时间 " .. os.date("%H:%M:%S", valid_after))
@@ -291,6 +644,11 @@ end
 
 local function current_utc_string()
     return os.date("!%Y%m%d%H%M%S")
+end
+
+-- 【修改】回看节目延迟 2 分钟才标记为可回看，避免节目刚开播时立即进入导致闪退
+local function catchup_ready_utc_string()
+    return os.date("!%Y%m%d%H%M%S", os.time() - 120)
 end
 
 -- 通用的时间参数替换函数，支持多种格式
@@ -583,11 +941,118 @@ local function force_refresh_epg()
     fetch_and_parse_epg_async(true)  -- true = 强制刷新
 end
 
+local function build_utility_menu_items()
+    return {
+        {
+            title = "EPG 回看搜索",
+            value = {"script-binding", "epg/show-epg-search-menu"},
+            hint = "F9",
+            icon = "manage_search"
+        }
+    }
+end
+
+local function build_channel_menu_item(group_name, ch)
+    local has_epg = state.epg_data[ch.tvg_id] and #state.epg_data[ch.tvg_id] > 0
+    local has_catchup = ch.catchup ~= "" and ch.catchup:find("%$%{")
+
+    local item = {
+        title = ch.name,
+        search_key = ch.name,
+        value = {"loadfile", ch.url},
+        icon = "live_tv",
+        id = "channel_" .. ch.name,
+        hint = group_name,
+    }
+
+    if has_epg then
+        item.hint = has_catchup and (group_name .. " | 回看▶") or (group_name .. " | EPG")
+        item.items = build_channel_epg_items(ch)
+    end
+
+    return item
+end
+
+local function build_iptv_root_items()
+    local items = {}
+    local utility_items = build_utility_menu_items()
+    for _, utility_item in ipairs(utility_items) do
+        table.insert(items, utility_item)
+    end
+
+    table.insert(items, {
+        title = "频道分组",
+        selectable = false,
+        muted = true,
+        italic = true
+    })
+
+    return items
+end
+
+local function build_channel_search_items(query)
+    local items = {}
+    local normalized_query = trim(query or ""):lower()
+
+    if normalized_query == "" then
+        return nil
+    end
+
+    for _, group_name in ipairs(state.group_names) do
+        local channels = state.groups[group_name]
+        for _, ch in ipairs(channels) do
+            if ch.name and channel_name_matches_query(ch.name, normalized_query) then
+                table.insert(items, build_channel_menu_item(group_name, ch))
+            end
+        end
+    end
+
+    if #items == 0 then
+        table.insert(items, {
+            title = "未找到匹配的频道",
+            selectable = false,
+            muted = true,
+            italic = true
+        })
+    end
+
+    return items
+end
+
+local function update_iptv_menu_items(items)
+    local menu_data = {
+        id = "iptv_root",
+        type = "iptv_menu",
+        title = "搜索频道",
+        items = items,
+        anchor_x = "left",
+        anchor_offset = 20,
+        search_style = "palette",
+        search_input_target = "iptv_root",
+        on_search = {"script-message-to", "epg", "iptv-channel-search"}
+    }
+
+    mp.commandv("script-message-to", "uosc", "update-menu", utils.format_json(menu_data))
+end
+
+local function handle_iptv_channel_search(query)
+    local search_items = build_channel_search_items(query)
+    if search_items then
+        update_iptv_menu_items(search_items)
+    else
+        local menu_data = build_main_menu()
+        if menu_data then
+            update_iptv_menu_items(menu_data.items)
+        end
+    end
+end
+
 local function parse_m3u(path)
     local content = read_file_safe(path)
     if not content then return false end
     state.groups = {}
     state.group_names = {}
+    channel_search_cache = {}
     state.epg_url = trim(options.epg_download_url)
     if state.epg_url ~= "" then
         mp.msg.info("使用配置的 EPG 下载连接: " .. state.epg_url)
@@ -649,7 +1114,7 @@ end
 -- ==================== 构建三级菜单：分组 > 频道 > EPG ====================
 
 -- 为单个频道构建 EPG 回看子菜单
-local function build_channel_epg_items(ch)
+build_channel_epg_items = function(ch)
     local epg_items = {}
     local epg_list = state.epg_data[ch.tvg_id]
     
@@ -657,10 +1122,11 @@ local function build_channel_epg_items(ch)
     table.insert(epg_items, {title = "节目单", selectable = false, muted = true, italic = true})
     
     if epg_list and #epg_list > 0 then
-        local now_utc = current_utc_string()
+        -- 【修改】回看资格判定延迟 2 分钟，兼容节目整点刚开始时的回看源稳定性
+        local catchup_ready_utc = catchup_ready_utc_string()
         for _, prog in ipairs(epg_list) do
             local display_title = prog.display_start .. " " .. prog.title
-            if ch.catchup ~= "" and ch.catchup:find("%$%{") and prog.start_utc ~= "" and prog.end_utc ~= "" and prog.start_utc <= now_utc then
+            if ch.catchup ~= "" and ch.catchup:find("%$%{") and prog.start_utc ~= "" and prog.end_utc ~= "" and prog.start_utc <= catchup_ready_utc then
                 local catchup_url = ch.catchup
                 catchup_url = replace_catchup_time_params(catchup_url, prog.start_utc, prog.end_utc)
                 table.insert(epg_items, {
@@ -692,13 +1158,13 @@ end
 
 -- 构建主菜单（三级嵌套结构）
 -- 返回值: menu_data, current_group_index, current_channel_index, current_has_epg, current_epg_index
-local function build_main_menu()
+build_main_menu = function()
     if not state.is_loaded then
         mp.osd_message("请先播放 M3U 文件！", 3)
         return nil
     end
     
-    local items = {}
+    local items = build_iptv_root_items()
     local current_group_idx = nil
     local current_channel_idx = nil
     local current_has_epg = false
@@ -718,7 +1184,6 @@ local function build_main_menu()
             
             -- 判断频道是否有 EPG 数据及回看功能
             local has_epg = state.epg_data[ch.tvg_id] and #state.epg_data[ch.tvg_id] > 0
-            local has_catchup = ch.catchup ~= "" and ch.catchup:find("%$%{")
             
             if is_current and has_epg then
                 current_has_epg = true
@@ -737,26 +1202,7 @@ local function build_main_menu()
                 end
             end
             
-            if has_epg then
-                -- 有EPG数据：同时支持直接播放和 EPG 子菜单
-                local hint_text = has_catchup and "回看▶" or "EPG"
-                table.insert(channel_items, {
-                    title = ch.name,
-                    value = {"loadfile", ch.url},  -- 点击直接播放
-                    icon = "live_tv",
-                    hint = hint_text,
-                    id = "channel_" .. ch.name,  -- 为频道添加ID
-                    items = build_channel_epg_items(ch)  -- 右侧展开 EPG 子菜单
-                })
-            else
-                -- 无EPG数据：频道直接播放
-                table.insert(channel_items, {
-                    title = ch.name,
-                    value = {"loadfile", ch.url},
-                    icon = "live_tv",
-                    id = "channel_" .. ch.name  -- 为频道添加ID
-                })
-            end
+            table.insert(channel_items, build_channel_menu_item(group_name, ch))
         end
         
         table.insert(items, {
@@ -770,11 +1216,16 @@ local function build_main_menu()
     end
     
     local menu_data = {
+        id = "iptv_root",
         type = "iptv_menu",
-        title = "IPTV",
+        title = "搜索频道",
         items = items,
         anchor_x = "left",
-        anchor_offset = 20
+        anchor_offset = 20,
+        search = "",
+        search_style = "palette",
+        search_input_target = "iptv_root",
+        on_search = {"script-message-to", "epg", "iptv-channel-search"}
     }
     
     return menu_data, current_group_idx, current_channel_idx, current_has_epg, current_epg_idx
@@ -823,6 +1274,9 @@ end
 
 -- 注册脚本绑定 (快捷键在 input.conf 中配置)
 mp.add_key_binding(nil, "show-iptv-menu", show_iptv_menu)
+mp.register_script_message("iptv-channel-search", function(query)
+    handle_iptv_channel_search(query)
+end)
 
 -- 跟踪当前播放的频道
 mp.observe_property("path", "string", function(name, path)
@@ -891,7 +1345,8 @@ local function build_catchup_epg_menu()
     end
     
     local temp_items = {}  -- 临时存储，包含排序键
-    local now_utc = current_utc_string()
+    -- 【修改】EPG 搜索菜单与三级菜单保持一致：节目开始 2 分钟后才显示为可回看
+    local catchup_ready_utc = catchup_ready_utc_string()
     
     -- 遍历所有频道组
     for group_name, channels in pairs(state.groups) do
@@ -902,8 +1357,8 @@ local function build_catchup_epg_menu()
                 local epg_list = state.epg_data[ch.tvg_id]
                 if epg_list then
                     for _, prog in ipairs(epg_list) do
-                        -- 只显示过去和当前的节目（可以回看）
-                        if prog.start_utc <= now_utc then
+                        -- 【修改】只显示开始时间早于当前时间 2 分钟的节目（可以回看）
+                        if prog.start_utc <= catchup_ready_utc then
                             -- 生成回看URL
                             local catchup_url = ch.catchup
                             catchup_url = replace_catchup_time_params(catchup_url, prog.start_utc, prog.end_utc)
