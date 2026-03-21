@@ -638,13 +638,8 @@ function show_iptv_menu()
     end
 end
 
-mp.add_key_binding("F8", "show-iptv-menu", show_iptv_menu)
-mp.add_key_binding("MBTN_RIGHT", "show-iptv-menu-mouse", show_iptv_menu)
-
--- 强制覆盖鼠标右键绑定，优先于 uosc 的暂停功能
-mp.set_key_bindings({
-    {'MBTN_RIGHT', show_iptv_menu}
-}, 'MBTN_RIGHT', 'force')
+-- 注册脚本绑定 (快捷键在 input.conf 中配置)
+mp.add_key_binding(nil, "show-iptv-menu", show_iptv_menu)
 
 -- 跟踪当前播放的频道
 mp.observe_property("path", "string", function(name, path)
@@ -799,11 +794,6 @@ local function show_epg_search_menu()
     mp.commandv("script-message-to", "uosc", "open-menu", utils.format_json(menu_data))
 end
 
--- 绑定 F9 键
-mp.add_key_binding("F9", "show-epg-search-menu", show_epg_search_menu)
-
--- 强制覆盖鼠标右键绑定，优先于 uosc 的暂停功能
-mp.set_key_bindings({
-    {'MBTN_RIGHT', show_iptv_menu}
-}, 'MBTN_RIGHT', 'force')
+-- 注册脚本绑定 (快捷键在 input.conf 中配置)
+mp.add_key_binding(nil, "show-epg-search-menu", show_epg_search_menu)
 
