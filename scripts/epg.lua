@@ -24,7 +24,11 @@ local state = {
     current_channel = nil,
     history_file = "epg_history.json",
     channel_history = {},
-    auto_playing = false  -- 标记是否正在自动播放历史频道
+    auto_playing = false,  -- 标记是否正在自动播放历史频道
+    -- 当前回看上下文（用于续播）
+    -- 结构: {live_url, catchup_template, start_utc, last_end_utc, retry_count}
+    current_catchup = nil,
+    catchup_timer = nil   -- 预判续播定时器
 }
 
 local build_main_menu
@@ -651,6 +655,39 @@ local function catchup_ready_utc_string()
     return os.date("!%Y%m%d%H%M%S", os.time() - 120)
 end
 
+-- 将 YYYYMMDDHHmmss UTC字符串转为 Unix 时间戳
+local function utc_str_to_timestamp(s)
+    if not s or #s < 14 then return nil end
+    local y  = tonumber(s:sub(1,4))
+    local mo = tonumber(s:sub(5,6))
+    local d  = tonumber(s:sub(7,8))
+    local h  = tonumber(s:sub(9,10))
+    local mi = tonumber(s:sub(11,12))
+    local sc = tonumber(s:sub(13,14))
+    if not (y and mo and d and h and mi and sc) then return nil end
+    -- os.time{} 把参数当本地时间解释，返回UTC时间戳
+    -- 输入是UTC时间，所以需要加上本地偏移量，抵消 os.time 的本地化处理
+    local now = os.time()
+    local local_offset = os.difftime(
+        os.time(os.date("*t", now)),
+        os.time(os.date("!*t", now))
+    )
+    return os.time{year=y, month=mo, day=d, hour=h, min=mi, sec=sc} + local_offset
+end
+
+-- 计算续播 end_utc：min(start_utc + 5h, now - 2min)
+local function calc_resume_end_utc(start_utc)
+    local start_ts = utc_str_to_timestamp(start_utc)
+    if not start_ts then
+        mp.msg.warn("calc_resume_end_utc: utc_str_to_timestamp 返回 nil，start_utc=" .. tostring(start_utc))
+        return nil
+    end
+    local end_ts = start_ts + 5 * 3600   -- 固定 start+5h，服务器接受未来时间
+    local result = os.date("!%Y%m%d%H%M%S", end_ts)
+    mp.msg.info(string.format("calc_resume_end_utc: start=%s result=%s", start_utc, result))
+    return result
+end
+
 -- 通用的时间参数替换函数，支持多种格式
 local function replace_catchup_time_params(catchup_url, start_utc, end_utc)
     -- 1. 标准回看模板（OK影视等）：${utc:yyyyMMddHHmmss} 和 ${utcend:yyyyMMddHHmmss}
@@ -1131,7 +1168,8 @@ build_channel_epg_items = function(ch)
                 catchup_url = replace_catchup_time_params(catchup_url, prog.start_utc, prog.end_utc)
                 table.insert(epg_items, {
                     title = display_title,
-                    value = {"loadfile", catchup_url},
+                    value = {"script-message-to", "epg", "play-catchup",
+                        catchup_url, ch.catchup, prog.start_utc, prog.end_utc, ch.url},
                     hint = "回看",
                     icon = "history"
                 })
@@ -1278,12 +1316,26 @@ mp.register_script_message("iptv-channel-search", function(query)
     handle_iptv_channel_search(query)
 end)
 
+-- 前向声明（实现在文件末尾）
+local start_catchup_timer
+
+-- 停止续播定时器
+local function stop_catchup_timer()
+    if state.catchup_timer then
+        state.catchup_timer:kill()
+        state.catchup_timer = nil
+    end
+end
+
 -- 跟踪当前播放的频道
 mp.observe_property("path", "string", function(name, path)
     if not path then return end
     for group_name, channels in pairs(state.groups) do
         for _, ch in ipairs(channels) do
             if ch.url == path or (path and path:find(ch.url, 1, true)) then
+                -- 命中直播URL：清空回看上下文和timer
+                stop_catchup_timer()
+                state.current_catchup = nil
                 -- 只有当频道真正改变时才更新
                 if not state.current_channel or state.current_channel.url ~= ch.url then
                     state.current_channel = ch
@@ -1296,6 +1348,13 @@ mp.observe_property("path", "string", function(name, path)
                 return
             end
         end
+    end
+    -- 未命中任何直播URL：当前是回看流
+    -- 若 current_catchup 存在，启动/重启预判 timer
+    if state.current_catchup then
+        mp.msg.info("observe_property: 检测到回看URL，启动预判timer")
+        stop_catchup_timer()
+        start_catchup_timer()
     end
 end)
 
@@ -1372,7 +1431,8 @@ local function build_catchup_epg_menu()
                                 menu_item = {
                                     title = display_text,
                                     search_key = prog.title,  -- 只用于搜索的EPG标题
-                                    value = {"loadfile", catchup_url},
+                                    value = {"script-message-to", "epg", "play-catchup",
+                                        catchup_url, ch.catchup, prog.start_utc, prog.end_utc, ch.url},
                                     hint = "回看",
                                     icon = "history"
                                 }
@@ -1434,4 +1494,151 @@ mp.add_key_binding(nil, "show-epg-search-menu", show_epg_search_menu)
 
 -- 注册强制刷新 EPG 快捷键 (Shift+F9)
 mp.add_key_binding(nil, "force-refresh-epg", force_refresh_epg)
+
+-- ==================== 时移续播逻辑 ====================
+
+-- 启动续播预判定时器（每3秒检查time-remaining）
+start_catchup_timer = function()
+    stop_catchup_timer()
+    state.catchup_timer = mp.add_periodic_timer(5, function()
+        if not state.current_catchup then
+            stop_catchup_timer()
+            return
+        end
+        local remaining = mp.get_property_number("time-remaining")
+        mp.msg.verbose(string.format("预判timer: time-remaining=%.1f", remaining or -1))
+        if remaining == nil then return end
+        if remaining > 15 then return end
+        mp.msg.info(string.format("预判timer: 剩余%.1f秒 <= 15秒，触发续播", remaining))
+
+        local cc = state.current_catchup
+        if cc.retry_count >= 3 then
+            mp.msg.warn("回看续播已达最大重试次数，切回直播")
+            mp.osd_message("回看续播失败，切回直播", 4)
+            stop_catchup_timer()
+            state.current_catchup = nil
+            mp.commandv("loadfile", cc.live_url)
+            return
+        end
+
+        local new_end_utc = calc_resume_end_utc(cc.start_utc)
+        if not new_end_utc then
+            stop_catchup_timer()
+            return
+        end
+
+        -- 已达5h上限（new_end == last_end）时等待播完当前片段
+        local time_pos = mp.get_property_number("time-pos") or 0
+        if new_end_utc <= cc.last_end_utc then
+            mp.msg.verbose("续播判断: 已达5h上限，等待播完当前片段")
+            return
+        end
+
+        -- 有新内容，提前切换续播URL（无缝预判）
+        local new_url = replace_catchup_time_params(cc.catchup_template, cc.start_utc, new_end_utc)
+        mp.msg.info(string.format("回看续播（预判）: end_utc %s -> %s", cc.last_end_utc, new_end_utc))
+        mp.osd_message(string.format("回看续播中... 已延伸至 %s:%s",
+            new_end_utc:sub(9,10), new_end_utc:sub(11,12)), 3)
+        -- seek到当前实际播放位置（time_pos）
+        mp.msg.info(string.format("回看续播seek: 跳转到 %.0f 秒处（当前time_pos）", time_pos))
+        cc.pending_seek_secs = time_pos
+        -- last_end_utc改存实际播放位置对应的UTC，而非new_end_utc
+        -- 这样下次续播new_end(start+5h)永远大于last_end，平展续播
+        cc.last_end_utc = os.date("!%Y%m%d%H%M%S", utc_str_to_timestamp(cc.start_utc) + time_pos)
+        cc.retry_count = cc.retry_count + 1
+        stop_catchup_timer()  -- 切换后由observe_property重新启动
+        mp.commandv("loadfile", new_url)
+    end)
+end
+
+-- 处理回看播放请求（由菜单项触发）
+-- 参数: catchup_url, catchup_template, start_utc, end_utc, live_url
+mp.register_script_message("play-catchup", function(catchup_url, catchup_template, start_utc, end_utc, live_url)
+    mp.msg.info(string.format("play-catchup: start=%s end=%s", start_utc, end_utc))
+    if not catchup_url or not catchup_template or not start_utc or not end_utc or not live_url then
+        mp.msg.error("play-catchup: 参数不完整")
+        if catchup_url then mp.commandv("loadfile", catchup_url) end
+        return
+    end
+    state.current_catchup = {
+        live_url         = live_url,
+        catchup_template = catchup_template,
+        start_utc        = start_utc,
+        last_end_utc     = end_utc,
+        retry_count      = 0
+    }
+    mp.commandv("loadfile", catchup_url)
+end)
+
+-- end-file 兜底：timer 来不及时处理 eof
+mp.register_event("end-file", function(event)
+    if event.reason ~= "eof" then
+        -- 只有用户真正退出(quit)才清空续播状态
+        -- stop 是 loadfile 切换流时mpv内部自动触发的，不能将它当作用户主动停止
+        if event.reason == "quit" then
+            stop_catchup_timer()
+            state.current_catchup = nil
+        end
+        return
+    end
+
+    if not state.current_catchup then return end
+
+    local cc = state.current_catchup
+    stop_catchup_timer()
+
+    if cc.retry_count >= 3 then
+        mp.msg.warn("回看续播已达最大重试次数（end-file兜底），切回直播")
+        mp.osd_message("回看续播失败，切回直播", 4)
+        state.current_catchup = nil
+        mp.commandv("loadfile", cc.live_url)
+        return
+    end
+
+    local new_end_utc = calc_resume_end_utc(cc.start_utc)
+    if not new_end_utc then
+        state.current_catchup = nil
+        return
+    end
+
+    -- 已达5h上限（new_end == last_end）则切回直播
+    if new_end_utc <= cc.last_end_utc then
+        mp.msg.info(string.format("续播判断(eof兜底): new_end=%s <= last_end=%s，已达5h上限，切回直播", new_end_utc, cc.last_end_utc))
+        mp.osd_message("已追上直播，切换直播流", 4)
+        state.current_catchup = nil
+        mp.commandv("loadfile", cc.live_url)
+        return
+    end
+
+    -- 续播
+    local new_url = replace_catchup_time_params(cc.catchup_template, cc.start_utc, new_end_utc)
+    mp.msg.info(string.format("回看续播（end-file兜底）: end_utc %s -> %s", cc.last_end_utc, new_end_utc))
+    mp.osd_message(string.format("回看续播中... 已延伸至 %s:%s",
+        new_end_utc:sub(9,10), new_end_utc:sub(11,12)), 3)
+    -- eof时用duration计算实际播到的位置
+    local duration = mp.get_property_number("duration") or 0
+    local seek_secs = duration
+    local actual_pos_utc = os.date("!%Y%m%d%H%M%S", utc_str_to_timestamp(cc.start_utc) + duration)
+    mp.msg.info(string.format("回看续播seek(兜底): 跳转到 %.0f 秒处（actual_pos=%s）", seek_secs, actual_pos_utc))
+    cc.pending_seek_secs = seek_secs
+    -- last_end_utc改存实际播放位置，而非new_end_utc
+    cc.last_end_utc = actual_pos_utc
+    cc.retry_count = cc.retry_count + 1
+    mp.commandv("loadfile", new_url)
+end)
+
+-- 续播加载完成后执行seek，跳过已看过的部分
+-- 延迟1秒等待流缓冲建立，再用 keyframes 模式 seek，避免 "Invalid video timestamp" 警告和画面闪烁
+mp.register_event("file-loaded", function()
+    if state.current_catchup and state.current_catchup.pending_seek_secs then
+        local secs = state.current_catchup.pending_seek_secs
+        state.current_catchup.pending_seek_secs = nil
+        mp.msg.info(string.format("file-loaded: 执行续播seek到 %.0f 秒", secs))
+        mp.add_timeout(1.0, function()
+            -- 再次确认仍处于回看上下文（防止1秒内用户手动切台）
+            if not state.current_catchup then return end
+            mp.commandv("seek", string.format("%.3f", secs), "absolute", "keyframes")
+        end)
+    end
+end)
 
