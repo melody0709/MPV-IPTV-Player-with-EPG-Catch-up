@@ -8,7 +8,7 @@
 
 ## 核心功能
 
-- **三级滑动菜单 + 频道搜索**：`F8` 顶部搜索框只匹配频道名，不会匹配 EPG 时间或节目标题；频道名下可显示当前节目副标题，并支持更紧凑的极简菜单样式；支持中文、拼音全拼和首字母搜索，如 `广东` / `guangdong` / `gd`，并按连续频道词边界匹配，例如 `dianying` / `dy` 可匹配 `电影`
+- **四级滑动菜单 + 频道搜索**：`F8` 顶部搜索框只匹配频道名，不会匹配 EPG 时间或节目标题；菜单结构为 分组 > 频道 > 日期桶 > EPG，日期桶支持 明天 / 今天 / 昨天 / 星期X（附月日副标题）；搜索支持中文、拼音全拼和首字母，如 `广东` / `guangdong` / `gd`、`东莞` / `dongguan` / `dg`
 - **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
 - **EPG 回看搜索 (F9)**：跨频道搜索所有可回看的节目，按时间倒序排列
 - **手动强制刷新 EPG (Shift+F9)**：忽略缓存立即重新下载节目单
@@ -59,7 +59,7 @@ portable_config/
 
 ## 关键修改点（uosc 源码修改 必须维护）
 
-本项目对 uosc 5.12 源码进行了三处关键修改，以支持 IPTV 三级菜单功能：
+本项目对 uosc 5.12 源码进行了关键修改，以支持 IPTV 四级菜单功能：
 
 1. **`scripts/uosc/main.lua`** - 新增 `expand-submenu` 消息处理器，增强 `open-menu` 支持 `anchor_x`/`anchor_offset`
 2. **`scripts/uosc/elements/Menu.lua`** - 修改 `activate_selected_item` 方法，支持同时执行 value 和展开子菜单
@@ -73,7 +73,7 @@ portable_config/
 
 - M3U/M3U8 文件解析
 - EPG XML 数据下载和解析（支持 gzip 压缩）
-- 三级菜单数据结构构建
+- 四级菜单数据结构构建（分组 > 频道 > 日期桶 > EPG）
 - 回看 URL 生成（支持 OK影视、酷9、APTV 三种时间模板）
 - 频道历史记录管理
 
@@ -191,7 +191,7 @@ mp.commandv("script-message-to", "uosc", "select-menu-item", menu_type, index, p
 
 - `parse_m3u(path)` - 解析 M3U 文件
 - `fetch_and_parse_epg_async()` - 异步获取并解析 EPG
-- `build_main_menu()` - 构建三级菜单数据结构
+- `build_main_menu()` - 构建四级菜单数据结构
 - `show_iptv_menu()` - 显示 IPTV 菜单（绑定 F8 和鼠标右键）
 
 ## 快速检查清单
@@ -216,7 +216,7 @@ mp.commandv("script-message-to", "uosc", "select-menu-item", menu_type, index, p
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.6.1（2026-03-23）
+- **IPTV 版本**：V1.6.2（2026-03-23）
 - **最后更新**：2026-03-23
 
 ## 相关文档

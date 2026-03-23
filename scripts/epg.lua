@@ -1,6 +1,6 @@
 --[[
-        mpv + uosc 5.12 IPTV 脚本 V1.6.1
-  重构：三级滑动菜单结构 - 分组 > 频道 > EPG回看
+                mpv + uosc 5.12 IPTV 脚本 V1.6.2
+    重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
 ]]
 
 local mp = require 'mp'
@@ -14,7 +14,8 @@ local options = {
     menu_subtitle_font_size = 0,
     menu_level1_min_width = 0,
     menu_level2_min_width = 0,
-    menu_level3_min_width = 0
+    menu_level3_min_width = 0,
+    menu_level4_min_width = 0
 }
 opt.read_options(options)
 
@@ -24,6 +25,7 @@ local state = {
     groups = {},
     group_names = {},
     epg_data = {},
+    channel_bucket_cache = {},
     is_loaded = false,
     current_channel = nil,
     history_file = "epg_history.json",
@@ -37,6 +39,7 @@ local state = {
 
 local build_main_menu
 local build_channel_epg_items
+local build_channel_date_bucket_items
 local channel_search_romanization = nil
 local channel_search_cache = {}
 
@@ -115,9 +118,24 @@ local function load_channel_search_romanization()
     end
 
     local romanization = {}
-    for roman, chars in pairs(data) do
+    local roman_keys = {}
+    for roman in pairs(data) do
+        roman_keys[#roman_keys + 1] = roman
+    end
+    table.sort(roman_keys, function(a, b)
+        if #a == #b then
+            return a < b
+        end
+        return #a > #b
+    end)
+
+    -- 多音字采用稳定策略：优先较长拼音，避免广->an、莞->wan 这类短拼音覆盖常用读音。
+    for _, roman in ipairs(roman_keys) do
+        local chars = data[roman]
         for _, char in utf8_iter(chars) do
-            romanization[char] = roman
+            if not romanization[char] then
+                romanization[char] = roman
+            end
         end
     end
 
@@ -668,6 +686,13 @@ local function current_utc_string()
     return os.date("!%Y%m%d%H%M%S")
 end
 
+local function to_utc_string(timestamp)
+    if not timestamp then
+        return nil
+    end
+    return os.date("!%Y%m%d%H%M%S", timestamp)
+end
+
 -- 【修改】回看节目延迟 2 分钟才标记为可回看，避免节目刚开播时立即进入导致闪退
 local function catchup_ready_utc_string()
     return os.date("!%Y%m%d%H%M%S", os.time() - 120)
@@ -768,6 +793,207 @@ local function get_current_program_for_channel(ch, now_utc)
     return nil, nil
 end
 
+local CHINESE_WEEKDAYS = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
+local DATE_BUCKET_ORDER = {"tomorrow", "today", "yesterday", "day_minus_2", "day_minus_3", "day_minus_4", "day_minus_5"}
+local DATE_BUCKET_LABELS = {
+    tomorrow = "明天",
+    today = "今天",
+    yesterday = "昨天",
+}
+
+local function get_local_day_start(ts)
+    local dt = os.date("*t", ts)
+    return os.time({
+        year = dt.year,
+        month = dt.month,
+        day = dt.day,
+        hour = 0,
+        min = 0,
+        sec = 0
+    })
+end
+
+local function get_bucket_label_and_subtitle(bucket_key, now_ts)
+    if DATE_BUCKET_LABELS[bucket_key] then
+        return DATE_BUCKET_LABELS[bucket_key], nil
+    end
+    local day_offsets = {
+        day_minus_2 = -2,
+        day_minus_3 = -3,
+        day_minus_4 = -4,
+        day_minus_5 = -5,
+    }
+    local offset = day_offsets[bucket_key]
+    if offset then
+        local target_ts = get_local_day_start(now_ts or os.time()) + offset * 86400
+        local dt = os.date("*t", target_ts)
+        local weekday = CHINESE_WEEKDAYS[dt.wday]
+        local subtitle = string.format("%d月%d日", dt.month, dt.day)
+        return weekday, subtitle
+    end
+    return bucket_key, nil
+end
+
+local function get_bucket_key_from_timestamp(target_ts, now_ts)
+    if not target_ts then
+        return "today"
+    end
+
+    local reference_now = now_ts or os.time()
+    local diff_days = math.floor((get_local_day_start(target_ts) - get_local_day_start(reference_now)) / 86400)
+
+    if diff_days >= 1 then
+        return "tomorrow"
+    elseif diff_days == 0 then
+        return "today"
+    elseif diff_days == -1 then
+        return "yesterday"
+    elseif diff_days == -2 then
+        return "day_minus_2"
+    elseif diff_days == -3 then
+        return "day_minus_3"
+    elseif diff_days == -4 then
+        return "day_minus_4"
+    end
+
+    return "day_minus_5"
+end
+
+local function get_bucket_key_for_utc(utc_str)
+    local ts = utc_str_to_timestamp(utc_str)
+    return get_bucket_key_from_timestamp(ts, os.time())
+end
+
+local function get_current_program_from_list(programs, reference_utc)
+    if not programs or #programs == 0 then
+        return nil, nil
+    end
+
+    local compare_utc = reference_utc or current_utc_string()
+    for index, prog in ipairs(programs) do
+        if prog.start_utc ~= "" and prog.end_utc ~= "" and prog.start_utc <= compare_utc and compare_utc <= prog.end_utc then
+            return prog, index
+        end
+    end
+
+    return nil, nil
+end
+
+local function get_channel_bucket_data(ch)
+    if not ch or not ch.tvg_id or ch.tvg_id == "" then
+        return nil
+    end
+
+    local epg_list = state.epg_data[ch.tvg_id]
+    if not epg_list or #epg_list == 0 then
+        return nil
+    end
+
+    local now_ts = os.time()
+    local day_ts = get_local_day_start(now_ts)
+    local cache = state.channel_bucket_cache[ch.tvg_id]
+    if cache and cache.epg_ref == epg_list and cache.day_ts == day_ts then
+        return cache.buckets
+    end
+
+    local buckets = {}
+    for _, bucket_key in ipairs(DATE_BUCKET_ORDER) do
+        local label, subtitle = get_bucket_label_and_subtitle(bucket_key, now_ts)
+        buckets[bucket_key] = {
+            key = bucket_key,
+            label = label,
+            subtitle = subtitle,
+            programs = {}
+        }
+    end
+
+    for _, prog in ipairs(epg_list) do
+        local bucket_key = get_bucket_key_for_utc(prog.start_utc)
+        if buckets[bucket_key] then
+            table.insert(buckets[bucket_key].programs, prog)
+        end
+    end
+
+    state.channel_bucket_cache[ch.tvg_id] = {
+        epg_ref = epg_list,
+        day_ts = day_ts,
+        buckets = buckets
+    }
+
+    return buckets
+end
+
+local function find_channel_by_url(url)
+    if not url or url == "" then
+        return nil
+    end
+
+    for _, group_name in ipairs(state.group_names) do
+        local channels = state.groups[group_name]
+        if channels then
+            for _, ch in ipairs(channels) do
+                if ch.url == url then
+                    return ch
+                end
+            end
+        end
+    end
+
+    for _, channels in pairs(state.groups) do
+        for _, ch in ipairs(channels) do
+            if ch.url == url then
+                return ch
+            end
+        end
+    end
+
+    return nil
+end
+
+local function get_menu_active_channel()
+    if state.current_catchup and state.current_catchup.live_url then
+        local catchup_channel = find_channel_by_url(state.current_catchup.live_url)
+        if catchup_channel then
+            return catchup_channel
+        end
+    end
+
+    return state.current_channel
+end
+
+local function get_catchup_reference_utc()
+    if not state.current_catchup or not state.current_catchup.start_utc then
+        return nil
+    end
+
+    local start_ts = utc_str_to_timestamp(state.current_catchup.start_utc)
+    if not start_ts then
+        return nil
+    end
+
+    local time_pos = mp.get_property_number("time-pos")
+    if not time_pos or time_pos < 0 then
+        time_pos = 0
+    end
+
+    return to_utc_string(start_ts + math.floor(time_pos))
+end
+
+local function get_menu_reference_utc_for_channel(ch, menu_active_channel, default_utc)
+    if not ch or not menu_active_channel then
+        return default_utc
+    end
+
+    if state.current_catchup and menu_active_channel.url == ch.url then
+        local catchup_utc = get_catchup_reference_utc()
+        if catchup_utc then
+            return catchup_utc
+        end
+    end
+
+    return default_utc
+end
+
 local function build_channel_now_playing_subtitle(ch, now_utc)
     local prog = get_current_program_for_channel(ch, now_utc)
     if not prog then
@@ -780,6 +1006,7 @@ end
 local function parse_epg_string(xml_str)
     mp.msg.info("EPG 内容预览 (前300字符): " .. xml_str:sub(1,300))
     state.epg_data = {}
+    state.channel_bucket_cache = {}
     local count = 0
     xml_str = xml_str:gsub("\n", " ")
     for prog_block in xml_str:gmatch('<programme(.-)</programme>') do
@@ -1036,7 +1263,7 @@ local function build_utility_menu_items()
     }
 end
 
-local function build_channel_menu_item(group_name, ch, now_utc)
+local function build_channel_menu_item(group_name, ch, now_utc, is_current_channel, forced_preload_bucket_key)
     local has_epg = state.epg_data[ch.tvg_id] and #state.epg_data[ch.tvg_id] > 0
     local current_program_subtitle = build_channel_now_playing_subtitle(ch, now_utc)
 
@@ -1048,17 +1275,38 @@ local function build_channel_menu_item(group_name, ch, now_utc)
         id = "channel_" .. ch.name,
     }
 
+    local menu_meta = {
+        has_epg = false,
+        active_bucket_key = nil,
+        active_bucket_idx = nil,
+        active_epg_idx = nil
+    }
+
     if has_epg then
-        item.items = build_channel_epg_items(ch)
-        local _, current_prog_index = get_current_program_for_channel(ch, now_utc)
-        if current_prog_index then
-            item.selected_sub_index = current_prog_index + 1  -- +1 因为EPG列表第一项是分隔线"节目单"
-        else
-            item.selected_sub_index = 2  -- 未命中当前时段时默认定位到第一条节目
+        local preload_bucket_keys = {today = true}
+        local active_bucket_key = get_bucket_key_for_utc(now_utc)
+        if is_current_channel then
+            preload_bucket_keys[active_bucket_key] = true
         end
+        if forced_preload_bucket_key then
+            preload_bucket_keys[forced_preload_bucket_key] = true
+        end
+
+        local bucket_items, active_bucket_idx, active_epg_idx = build_channel_date_bucket_items(ch, now_utc, preload_bucket_keys)
+        if #bucket_items > 0 then
+            item.items = bucket_items
+            if active_bucket_idx then
+                item.selected_sub_index = active_bucket_idx
+            end
+        end
+
+        menu_meta.has_epg = #bucket_items > 0
+        menu_meta.active_bucket_key = active_bucket_key
+        menu_meta.active_bucket_idx = active_bucket_idx
+        menu_meta.active_epg_idx = active_epg_idx
     end
 
-    return item
+    return item, menu_meta
 end
 
 local function build_iptv_root_items()
@@ -1091,7 +1339,8 @@ local function build_channel_search_items(query)
         local channels = state.groups[group_name]
         for _, ch in ipairs(channels) do
             if ch.name and channel_name_matches_query(ch.name, normalized_query) then
-                table.insert(items, build_channel_menu_item(group_name, ch, now_utc))
+                local channel_item = build_channel_menu_item(group_name, ch, now_utc)
+                table.insert(items, channel_item)
             end
         end
     end
@@ -1151,6 +1400,7 @@ local function parse_m3u(path)
     if not content then return false end
     state.groups = {}
     state.group_names = {}
+    state.channel_bucket_cache = {}
     channel_search_cache = {}
     state.epg_url = trim(options.epg_download_url)
     if state.epg_url ~= "" then
@@ -1210,12 +1460,16 @@ local function parse_m3u(path)
     return true
 end
 
--- ==================== 构建三级菜单：分组 > 频道 > EPG ====================
+-- ==================== 构建四级菜单：分组 > 频道 > 日期桶 > EPG ====================
 
--- 为单个频道构建 EPG 回看子菜单
-build_channel_epg_items = function(ch)
+local function build_date_bucket_id(ch, bucket_key)
+    return "date_" .. (ch.name or "unknown") .. "_" .. bucket_key
+end
+
+-- 为单个频道构建 EPG 回看子菜单（支持传入指定节目列表，减少不必要构建）
+build_channel_epg_items = function(ch, programs)
     local epg_items = {}
-    local epg_list = state.epg_data[ch.tvg_id]
+    local epg_list = programs or state.epg_data[ch.tvg_id]
     
     -- 分隔线
     table.insert(epg_items, {title = "节目单", selectable = false, muted = true, italic = true})
@@ -1259,9 +1513,72 @@ build_channel_epg_items = function(ch)
     return epg_items
 end
 
--- 构建主菜单（三级嵌套结构）
--- 返回值: menu_data, current_group_index, current_channel_index, current_has_epg, current_epg_index
-build_main_menu = function()
+build_channel_date_bucket_items = function(ch, reference_utc, preload_bucket_keys)
+    local bucket_items = {}
+    local bucket_data = get_channel_bucket_data(ch)
+    local active_bucket_key = get_bucket_key_for_utc(reference_utc)
+    local active_bucket_idx = nil
+    local active_epg_idx = nil
+
+    if not bucket_data then
+        return bucket_items, active_bucket_idx, active_epg_idx, active_bucket_key
+    end
+
+    local preload = preload_bucket_keys or {}
+    for _, bucket_key in ipairs(DATE_BUCKET_ORDER) do
+        local bucket = bucket_data[bucket_key]
+        local programs = bucket and bucket.programs or nil
+        if programs and #programs > 0 then
+            local bucket_item = {
+                title = bucket.label,
+                subtitle = bucket.subtitle,
+                id = build_date_bucket_id(ch, bucket_key),
+                no_hover_expand = true,
+                no_hover_select = true
+            }
+
+            if preload[bucket_key] then
+                bucket_item.items = build_channel_epg_items(ch, programs)
+
+                if bucket_key == active_bucket_key then
+                    local _, current_prog_index = get_current_program_from_list(programs, reference_utc)
+                    if current_prog_index then
+                        active_epg_idx = current_prog_index + 1
+                    elseif #bucket_item.items >= 2 then
+                        active_epg_idx = 2
+                    end
+
+                    if active_epg_idx then
+                        bucket_item.selected_sub_index = active_epg_idx
+                    end
+                end
+            else
+                bucket_item.value = {
+                    "script-message-to", "epg", "open-channel-date-bucket",
+                    ch.url,
+                    bucket_key,
+                    reference_utc or ""
+                }
+                bucket_item.keep_open = true
+            end
+
+            table.insert(bucket_items, bucket_item)
+            if bucket_key == active_bucket_key then
+                active_bucket_idx = #bucket_items
+            end
+        end
+    end
+
+    if not active_bucket_idx and #bucket_items > 0 then
+        active_bucket_idx = 1
+    end
+
+    return bucket_items, active_bucket_idx, active_epg_idx, active_bucket_key
+end
+
+-- 构建主菜单（四级嵌套结构）
+-- 返回值: menu_data, current_group_index, current_channel_index, current_has_epg, current_bucket_id, current_epg_index
+build_main_menu = function(preload_target)
     if not state.is_loaded then
         mp.osd_message("请先播放 M3U 文件！", 3)
         return nil
@@ -1271,12 +1588,15 @@ build_main_menu = function()
     local current_group_idx = nil
     local current_channel_idx = nil
     local current_has_epg = false
+    local current_bucket_id = nil
     local current_epg_idx = nil
+    local menu_active_channel = get_menu_active_channel()
     local now_utc = current_utc_string()
     local menu_subtitle_font_size = get_positive_integer_option(options.menu_subtitle_font_size)
     local menu_level1_min_width = get_positive_integer_option(options.menu_level1_min_width)
     local menu_level2_min_width = get_positive_integer_option(options.menu_level2_min_width)
     local menu_level3_min_width = get_positive_integer_option(options.menu_level3_min_width)
+    local menu_level4_min_width = get_positive_integer_option(options.menu_level4_min_width)
     
     for group_idx, group_name in ipairs(state.group_names) do
         local channels = state.groups[group_name]
@@ -1284,29 +1604,28 @@ build_main_menu = function()
         
         for channel_idx, ch in ipairs(channels) do
             -- 判断是否为当前播放频道
-            local is_current = state.current_channel and state.current_channel.url == ch.url
+            local is_current = menu_active_channel and menu_active_channel.url == ch.url
+            local reference_utc = get_menu_reference_utc_for_channel(ch, menu_active_channel, now_utc)
             if is_current then
                 current_group_idx = group_idx
                 current_channel_idx = channel_idx
             end
-            
-            -- 判断频道是否有 EPG 数据及回看功能
-            local has_epg = state.epg_data[ch.tvg_id] and #state.epg_data[ch.tvg_id] > 0
-            local current_prog, current_prog_index = get_current_program_for_channel(ch, now_utc)
-            
-            if is_current and has_epg then
-                current_has_epg = true
-                -- 找到当前时间点的节目索引
-                if current_prog and current_prog_index then
-                    current_epg_idx = current_prog_index + 1  -- +1 因为EPG列表第一项是分隔线"节目单"
-                end
-                -- 如果没找到当前节目，默认选第一个节目（索引2）
-                if not current_epg_idx then
-                    current_epg_idx = 2
-                end
+
+            local forced_preload_bucket_key = nil
+            if preload_target and preload_target.channel_url == ch.url then
+                forced_preload_bucket_key = preload_target.bucket_key
             end
-            
-            table.insert(channel_items, build_channel_menu_item(group_name, ch, now_utc))
+
+            local channel_item, channel_meta = build_channel_menu_item(group_name, ch, reference_utc, is_current, forced_preload_bucket_key)
+            if is_current and channel_meta and channel_meta.has_epg then
+                current_has_epg = true
+                if channel_meta.active_bucket_key then
+                    current_bucket_id = build_date_bucket_id(ch, channel_meta.active_bucket_key)
+                end
+                current_epg_idx = channel_meta.active_epg_idx
+            end
+
+            table.insert(channel_items, channel_item)
         end
 
         local group_item = {
@@ -1326,16 +1645,25 @@ build_main_menu = function()
         table.insert(items, group_item)
     end
 
-    if menu_level3_min_width or menu_subtitle_font_size then
+    if menu_level3_min_width or menu_level4_min_width or menu_subtitle_font_size then
         for _, group_item in ipairs(items) do
             if group_item.items then
                 for _, channel_item in ipairs(group_item.items) do
                     if channel_item.items then
                         if menu_level3_min_width then
                             channel_item.menu_min_width = menu_level3_min_width
+                            channel_item.menu_max_width = menu_level3_min_width
                         end
                         if menu_subtitle_font_size then
                             channel_item.subtitle_font_size = menu_subtitle_font_size
+                        end
+
+                        for _, date_bucket_item in ipairs(channel_item.items) do
+                            if date_bucket_item.items then
+                                if menu_level4_min_width then
+                                    date_bucket_item.menu_min_width = menu_level4_min_width
+                                end
+                            end
                         end
                     end
                 end
@@ -1363,19 +1691,20 @@ build_main_menu = function()
         menu_data.subtitle_font_size = menu_subtitle_font_size
     end
     
-    return menu_data, current_group_idx, current_channel_idx, current_has_epg, current_epg_idx
+    return menu_data, current_group_idx, current_channel_idx, current_has_epg, current_bucket_id, current_epg_idx
 end
 
 -- ==================== 交互命令 ====================
 
 function show_iptv_menu()
-    local menu_data, current_group_idx, current_channel_idx, current_has_epg, current_epg_idx = build_main_menu()
+    local menu_data, current_group_idx, current_channel_idx, current_has_epg, current_bucket_id, current_epg_idx = build_main_menu()
     if not menu_data then return end
+    local menu_active_channel = get_menu_active_channel()
     
     -- 确定要展开的分组ID
     local submenu_id = nil
-    if state.current_channel and state.current_channel.group then
-        submenu_id = "group_" .. state.current_channel.group
+    if menu_active_channel and menu_active_channel.group then
+        submenu_id = "group_" .. menu_active_channel.group
     elseif #state.group_names > 0 then
         submenu_id = "group_" .. state.group_names[1]
     end
@@ -1388,16 +1717,21 @@ function show_iptv_menu()
     end
     
     -- 如果有当前频道，处理选中/展开逻辑
-    if current_group_idx and current_channel_idx and state.current_channel then
+    if current_group_idx and current_channel_idx and menu_active_channel then
         -- 延迟一点执行，确保菜单已经渲染
         mp.add_timeout(0.01, function()
-            if current_has_epg and current_epg_idx then
-                -- 有EPG：展开EPG子菜单，并选中当前时间点的节目
-                local channel_id = "channel_" .. state.current_channel.name
+            if current_has_epg and current_bucket_id then
+                -- 有EPG：展开频道 -> 日期桶 -> 当前节目
+                local channel_id = "channel_" .. menu_active_channel.name
                 mp.commandv("script-message-to", "uosc", "expand-submenu", channel_id)
-                -- 延迟选中当前时间点的节目
+
                 mp.add_timeout(0.01, function()
-                    mp.commandv("script-message-to", "uosc", "select-menu-item", "iptv_menu", tostring(current_epg_idx), channel_id)
+                    mp.commandv("script-message-to", "uosc", "expand-submenu", current_bucket_id)
+                    if current_epg_idx then
+                        mp.add_timeout(0.01, function()
+                            mp.commandv("script-message-to", "uosc", "select-menu-item", "iptv_menu", tostring(current_epg_idx), current_bucket_id)
+                        end)
+                    end
                 end)
             else
                 -- 无EPG：只选中频道，不展开子菜单，不进入直播
@@ -1407,10 +1741,58 @@ function show_iptv_menu()
     end
 end
 
+local function show_channel_date_bucket_menu(channel_url, bucket_key, reference_utc)
+    local ch = find_channel_by_url(channel_url)
+    if not ch then
+        return
+    end
+
+    local bucket_data = get_channel_bucket_data(ch)
+    local bucket = bucket_data and bucket_data[bucket_key] or nil
+    if not bucket or not bucket.programs or #bucket.programs == 0 then
+        return
+    end
+
+    local refreshed_menu_data = build_main_menu({
+        channel_url = channel_url,
+        bucket_key = bucket_key
+    })
+    if not refreshed_menu_data then
+        return
+    end
+
+    mp.commandv("script-message-to", "uosc", "update-menu", utils.format_json(refreshed_menu_data))
+
+    local group_id = "group_" .. ch.group
+    local channel_id = "channel_" .. ch.name
+    local bucket_id = build_date_bucket_id(ch, bucket_key)
+
+    mp.add_timeout(0.01, function()
+        mp.commandv("script-message-to", "uosc", "expand-submenu", group_id)
+        mp.add_timeout(0.01, function()
+            mp.commandv("script-message-to", "uosc", "expand-submenu", channel_id)
+            mp.add_timeout(0.01, function()
+                mp.commandv("script-message-to", "uosc", "expand-submenu", bucket_id)
+
+                local _, active_prog_index = get_current_program_from_list(bucket.programs, reference_utc)
+                if active_prog_index then
+                    local selected_index = active_prog_index + 1
+                    mp.add_timeout(0.01, function()
+                        mp.commandv("script-message-to", "uosc", "select-menu-item", "iptv_menu", tostring(selected_index), bucket_id)
+                    end)
+                end
+            end)
+        end)
+    end)
+end
+
 -- 注册脚本绑定 (快捷键在 input.conf 中配置)
 mp.add_key_binding(nil, "show-iptv-menu", show_iptv_menu)
 mp.register_script_message("iptv-channel-search", function(query)
     handle_iptv_channel_search(query)
+end)
+mp.register_script_message("open-channel-date-bucket", function(channel_url, bucket_key, reference_utc)
+    show_channel_date_bucket_menu(channel_url, bucket_key, reference_utc)
 end)
 
 -- 前向声明（实现在文件末尾）
@@ -1664,6 +2046,12 @@ mp.register_script_message("play-catchup", function(catchup_url, catchup_templat
         last_end_utc     = end_utc,
         retry_count      = 0
     }
+
+    local catchup_channel = find_channel_by_url(live_url)
+    if catchup_channel then
+        state.current_channel = catchup_channel
+    end
+
     mp.commandv("loadfile", catchup_url)
 end)
 

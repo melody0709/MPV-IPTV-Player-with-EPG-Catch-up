@@ -3,13 +3,13 @@ local Element = require('elements/Element')
 ---@alias MenuAction {name: string; icon: string; label?: string; filter_hidden?: boolean;}
 
 -- Menu data structure accepted by `Menu:open(menu)`.
----@alias MenuData {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; menu_min_width?: number; subtitle_font_size?: number; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]}
+---@alias MenuData {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; menu_min_width?: number; menu_max_width?: number; subtitle_font_size?: number; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]}
 ---@alias MenuDataChild MenuDataItem|MenuData
----@alias MenuDataItem {title?: string; subtitle?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; selected_sub_index?: integer}
+---@alias MenuDataItem {title?: string; subtitle?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; no_hover_expand?: boolean; no_hover_select?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; selected_sub_index?: integer}
 ---@alias MenuOptions {mouse_nav?: boolean; anchor_x?: 'left'|'center'|'right'; anchor_offset?: number;}
 
 -- Internal data structure created from `MenuData`.
----@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; menu_min_width?: number; subtitle_font_size?: number; subtitle_font_size_resolved?: number; items: MenuStackChild[]; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
+---@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; menu_min_width?: number; menu_max_width?: number; subtitle_font_size?: number; subtitle_font_size_resolved?: number; items: MenuStackChild[]; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
 ---@alias MenuStackChild MenuStackItem|MenuStack
 ---@alias MenuStackItem {title?: string; subtitle?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; selected_sub_index?: integer; title_width: number; subtitle_width: number; hint_width: number; ass_safe_hint?: string; ass_safe_subtitle?: string}
 ---@alias Fling {y: number, distance: number, time: number, easing: fun(x: number), duration: number, update_cursor?: boolean}
@@ -384,8 +384,17 @@ function Menu:update_dimensions()
 			menu_min_width = math.min(round(custom_menu_min_width * state.scale), width_available)
 		end
 
+		local menu_max_width = width_available
+		local custom_menu_max_width = tonumber(menu.menu_max_width)
+		if custom_menu_max_width and custom_menu_max_width > 0 then
+			menu_max_width = math.min(round(custom_menu_max_width * state.scale), width_available)
+		end
+		if menu_max_width < menu_min_width then
+			menu_max_width = menu_min_width
+		end
+
 		local width = math.max(menu.search and menu.search.max_width or 0, menu.max_width)
-		menu.width = round(clamp(menu_min_width, width, width_available))
+		menu.width = round(clamp(menu_min_width, width, menu_max_width))
 		local title_height = (menu.is_root and menu.title or menu.search) and
 			self.scroll_step + self.separator_size + 1 or 0
 		local footnote_height = self.font_size * 1.5
@@ -1594,6 +1603,8 @@ function Menu:render()
 
 			-- Select hovered item
 			if (is_current or is_parent) and self.mouse_nav and item.selectable ~= false
+				-- no_hover_select: 父菜单列中不响应悬停高亮，只有当该列为当前菜单时才响应
+				and not (is_parent and item.no_hover_select)
 				-- Do not select items if cursor is moving towards a submenu
 				and (not submenu_rect or not cursor:direction_to_rectangle_distance(submenu_rect))
 				and (submenu_is_hovered or get_point_to_rectangle_proximity(cursor, item_rect_hitbox) <= 0) then
@@ -1603,14 +1614,34 @@ function Menu:render()
 					request_render()
 				end
 				
-				-- 自动展开子菜单（悬停激活）
-				if item.items and self.current ~= item then
+				-- 自动展开子菜单（悬停激活，除非设置了 no_hover_expand）
+				if item.items and not item.no_hover_expand and self.current ~= item then
 					self:activate_menu(item.id)
 					if item.selected_sub_index then
+						local sub_item = item.items[item.selected_sub_index]
 						self:select_index(item.selected_sub_index, item.id)
 						self:scroll_to_index(item.selected_sub_index, item.id, true)
+						-- 级联展开：若选中的子项已预构建（有 items），无论 no_hover_expand 均继续展开
+						if sub_item and sub_item.items then
+							self:activate_menu(sub_item.id)
+							if sub_item.selected_sub_index then
+								self:select_index(sub_item.selected_sub_index, sub_item.id)
+								self:scroll_to_index(sub_item.selected_sub_index, sub_item.id, true)
+							end
+						end
 					end
 				end
+			end
+
+			-- no_hover_select 父列项：注册独立点击区（后注册 = 优先于 bg_rect），确保点击时选中正确项
+			if is_parent and item.no_hover_select then
+				cursor:zone('primary_down', item_rect_hitbox, self:create_action(function()
+					menu.selected_index = index
+					self.drag_last_y = cursor.y  -- 让 handle_cursor_up 能触发 activate_selected_item
+					self.is_dragging = false
+					self.current.fling = nil
+					self:slide_in_menu(menu.id, x)
+				end))
 			end
 
 			local has_background = is_selected or item.active
