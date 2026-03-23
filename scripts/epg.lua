@@ -1,5 +1,5 @@
 --[[
-                mpv + uosc 5.12 IPTV 脚本 V1.6.2
+                mpv + uosc 5.12 IPTV 脚本 V1.6.3
     重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
 ]]
 
@@ -794,7 +794,7 @@ local function get_current_program_for_channel(ch, now_utc)
 end
 
 local CHINESE_WEEKDAYS = {"星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"}
-local DATE_BUCKET_ORDER = {"tomorrow", "today", "yesterday", "day_minus_2", "day_minus_3", "day_minus_4", "day_minus_5"}
+local DATE_BUCKET_ORDER = {"tomorrow", "today", "yesterday", "day_minus_2", "day_minus_3", "day_minus_4", "day_minus_5", "day_minus_6"}
 local DATE_BUCKET_LABELS = {
     tomorrow = "明天",
     today = "今天",
@@ -822,6 +822,7 @@ local function get_bucket_label_and_subtitle(bucket_key, now_ts)
         day_minus_3 = -3,
         day_minus_4 = -4,
         day_minus_5 = -5,
+        day_minus_6 = -6,
     }
     local offset = day_offsets[bucket_key]
     if offset then
@@ -854,9 +855,13 @@ local function get_bucket_key_from_timestamp(target_ts, now_ts)
         return "day_minus_3"
     elseif diff_days == -4 then
         return "day_minus_4"
+    elseif diff_days == -5 then
+        return "day_minus_5"
+    elseif diff_days == -6 then
+        return "day_minus_6"
     end
 
-    return "day_minus_5"
+    return "day_minus_6"
 end
 
 local function get_bucket_key_for_utc(utc_str)
@@ -1763,25 +1768,22 @@ local function show_channel_date_bucket_menu(channel_url, bucket_key, reference_
 
     mp.commandv("script-message-to", "uosc", "update-menu", utils.format_json(refreshed_menu_data))
 
-    local group_id = "group_" .. ch.group
     local channel_id = "channel_" .. ch.name
     local bucket_id = build_date_bucket_id(ch, bucket_key)
 
     mp.add_timeout(0.01, function()
-        mp.commandv("script-message-to", "uosc", "expand-submenu", group_id)
+        -- 先确保频道层已激活，再展开日期桶，避免 group -> channel 的往返切换抖动。
+        mp.commandv("script-message-to", "uosc", "expand-submenu", channel_id)
         mp.add_timeout(0.01, function()
-            mp.commandv("script-message-to", "uosc", "expand-submenu", channel_id)
-            mp.add_timeout(0.01, function()
-                mp.commandv("script-message-to", "uosc", "expand-submenu", bucket_id)
+            mp.commandv("script-message-to", "uosc", "expand-submenu", bucket_id)
 
-                local _, active_prog_index = get_current_program_from_list(bucket.programs, reference_utc)
-                if active_prog_index then
-                    local selected_index = active_prog_index + 1
-                    mp.add_timeout(0.01, function()
-                        mp.commandv("script-message-to", "uosc", "select-menu-item", "iptv_menu", tostring(selected_index), bucket_id)
-                    end)
-                end
-            end)
+            local _, active_prog_index = get_current_program_from_list(bucket.programs, reference_utc)
+            if active_prog_index then
+                local selected_index = active_prog_index + 1
+                mp.add_timeout(0.01, function()
+                    mp.commandv("script-message-to", "uosc", "select-menu-item", "iptv_menu", tostring(selected_index), bucket_id)
+                end)
+            end
         end)
     end)
 end

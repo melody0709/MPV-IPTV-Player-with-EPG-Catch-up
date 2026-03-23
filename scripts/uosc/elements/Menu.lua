@@ -712,7 +712,8 @@ function Menu:slide_in_menu(id, x)
 	local menu = self:get_menu(id)
 	if not menu then return end
 	self:activate_menu(id)
-	self:tween(-(display.width / 2 - menu.width / 2 - x), 0, function(offset) self:set_offset_x(offset) end)
+	-- 【修改】禁用横向补间动画，切换菜单时直接定位
+	self:set_offset_x(0)
 	self.opacity = 1 -- in case tween above canceled fade in animation
 end
 
@@ -762,7 +763,8 @@ function Menu:activate_selected_item(shortcut, is_pointer)
 			if item.selected_sub_index then
 				self:scroll_to_index(item.selected_sub_index, item.id, true)
 			end
-			self:tween(self.offset_x + menu.width / 2, 0, function(offset) self:set_offset_x(offset) end)
+			-- 【修改】禁用子菜单横向补间动画，统一为无动画切换
+			self:set_offset_x(0)
 			self.opacity = 1 -- in case tween above canceled fade in animation
 		end
 	end

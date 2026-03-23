@@ -140,6 +140,13 @@ portable_config/
 - 重大重构 → 升主版本 x+1.0.0
   禁止随意跳版本。
 
+### 发布说明规则
+
+- 发布 Release 时，只能使用当前版本的小节作为发布说明，禁止直接粘贴整个 `CHANGELOG.md`。
+- `CHANGELOG.md` 必须保持“每个版本一个独立小节”（版本号、日期、变更列表）。
+- 建议先从 `CHANGELOG.md` 提取当前版本小节到临时发布说明文件，再用于 GitHub Release。
+- 发布前核对：Release 标题版本号、Git Tag、`CHANGELOG.md` 当前版本小节三者一致。
+
 ### 调试方法
 
 ```lua
@@ -216,7 +223,7 @@ mp.commandv("script-message-to", "uosc", "select-menu-item", menu_type, index, p
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.6.2（2026-03-23）
+- **IPTV 版本**：V1.6.3（2026-03-23）
 - **最后更新**：2026-03-23
 
 ## 相关文档
