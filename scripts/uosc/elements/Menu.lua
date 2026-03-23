@@ -3,15 +3,15 @@ local Element = require('elements/Element')
 ---@alias MenuAction {name: string; icon: string; label?: string; filter_hidden?: boolean;}
 
 -- Menu data structure accepted by `Menu:open(menu)`.
----@alias MenuData {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]}
+---@alias MenuData {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; menu_min_width?: number; subtitle_font_size?: number; items?: MenuDataChild[]; selected_index?: integer; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]}
 ---@alias MenuDataChild MenuDataItem|MenuData
----@alias MenuDataItem {title?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'}
+---@alias MenuDataItem {title?: string; subtitle?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; selected_sub_index?: integer}
 ---@alias MenuOptions {mouse_nav?: boolean; anchor_x?: 'left'|'center'|'right'; anchor_offset?: number;}
 
 -- Internal data structure created from `MenuData`.
----@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; items: MenuStackChild[]; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
+---@alias MenuStack {id?: string; type?: string; title?: string; hint?: string; footnote: string; search_style?: 'on_demand' | 'palette' | 'disabled';  item_actions?: MenuAction[]; item_actions_place?: 'inside' | 'outside'; callback?: string[]; selected_index?: number; action_index?: number; keep_open?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; menu_min_width?: number; subtitle_font_size?: number; subtitle_font_size_resolved?: number; items: MenuStackChild[]; on_search?: string|string[]; on_paste?: string|string[]; on_move?: string|string[]; on_close?: string|string[]; search_debounce?: number|string; search_submenus?: boolean; search_suggestion?: string; search_submit?: boolean; bind_keys?: string[]; parent_menu?: MenuStack; submenu_path: integer[]; active?: boolean; width: number; height: number; top: number; scroll_y: number; scroll_height: number; title_width: number; hint_width: number; max_width: number; is_root?: boolean; fling?: Fling, search?: Search, ass_safe_title?: string}
 ---@alias MenuStackChild MenuStackItem|MenuStack
----@alias MenuStackItem {title?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; title_width: number; hint_width: number; ass_safe_hint?: string}
+---@alias MenuStackItem {title?: string; subtitle?: string; hint?: string; icon?: string; value: any; actions?: MenuAction[]; actions_place?: 'inside' | 'outside'; active?: boolean; keep_open?: boolean; selectable?: boolean; bold?: boolean; italic?: boolean; muted?: boolean; separator?: boolean; align?: 'left'|'center'|'right'; selected_sub_index?: integer; title_width: number; subtitle_width: number; hint_width: number; ass_safe_hint?: string; ass_safe_subtitle?: string}
 ---@alias Fling {y: number, distance: number, time: number, easing: fun(x: number), duration: number, update_cursor?: boolean}
 ---@alias Search {query: string; cursor: number; timeout: unknown; min_top: number; max_width: number; source: {width: number; top: number; scroll_y: number; selected_index?: integer; items?: MenuStackChild[]}}
 
@@ -194,7 +194,9 @@ function Menu:update(data)
 		else
 			menu.id = '{root}'
 		end
-		menu.icon = 'chevron_right'
+		-- 【修改】移除所有子菜单默认右箭头，仅保留显式配置的图标
+		-- menu.icon = 'chevron_right'
+		menu.icon = menu_data.icon
 
 		-- Normalize `search_debounce`
 		if type(menu_data.search_debounce) == 'number' then
@@ -295,32 +297,65 @@ function Menu:update_items(items)
 end
 
 function Menu:update_content_dimensions()
-	self.item_height = round(options.menu_item_height * state.scale)
+	local base_item_height = round(options.menu_item_height * state.scale)
 	self.min_width = round(options.menu_min_width * state.scale)
 	self.separator_size = round(1 * state.scale)
 	self.scrollbar_size = round(2 * state.scale)
 	self.padding = round(options.menu_padding * state.scale)
 	self.gap = round(2 * state.scale)
-	self.font_size = round(self.item_height * 0.48 * options.font_scale)
+	self.font_size = round(base_item_height * 0.48 * options.font_scale)
+	self.font_size_subtitle = math.max(8, self.font_size - round(3 * state.scale))
 	self.font_size_hint = self.font_size - 1
-	self.item_padding = round((self.item_height - self.font_size) * 0.6)
+	self.subtitle_gap = round(2 * state.scale)
+	self.has_subtitles = false
+	local max_subtitle_font_size = self.font_size_subtitle
+	for _, menu in ipairs(self.all) do
+		local configured_subtitle_font_size = tonumber(menu.subtitle_font_size)
+		if configured_subtitle_font_size and configured_subtitle_font_size > 0 then
+			menu.subtitle_font_size_resolved = math.max(8, round(configured_subtitle_font_size * state.scale))
+		else
+			menu.subtitle_font_size_resolved = self.font_size_subtitle
+		end
+		if menu.subtitle_font_size_resolved > max_subtitle_font_size then
+			max_subtitle_font_size = menu.subtitle_font_size_resolved
+		end
+
+		for _, item in ipairs(menu.items) do
+			if item.subtitle and item.subtitle ~= '' then
+				self.has_subtitles = true
+				break
+			end
+		end
+	end
+	self.font_size_subtitle = max_subtitle_font_size
+	if self.has_subtitles then
+		local subtitle_block_height = self.font_size + self.font_size_subtitle + self.subtitle_gap
+		self.item_height = math.max(base_item_height, subtitle_block_height + round(12 * state.scale))
+	else
+		self.item_height = base_item_height
+	end
+	self.item_padding = round(math.max(6 * state.scale, (self.item_height - self.font_size) * 0.6))
 	self.scroll_step = self.item_height + self.item_spacing
 
 	local title_opts = {size = self.font_size, italic = false, bold = false}
+	local subtitle_opts = {size = self.font_size_subtitle, italic = false, bold = false}
 	local hint_opts = {size = self.font_size_hint}
 
 	for _, menu in ipairs(self.all) do
 		title_opts.bold, title_opts.italic = true, false
 		local max_width = text_width(menu.title, title_opts) + 2 * self.item_padding
+		subtitle_opts.size = menu.subtitle_font_size_resolved or self.font_size_subtitle
 
 		-- Estimate width of a widest item
 		for _, item in ipairs(menu.items) do
 			local icon_width = item.icon and self.font_size or 0
 			item.title_width = text_width(item.title, title_opts)
+			item.subtitle_width = text_width(item.subtitle, subtitle_opts)
 			item.hint_width = text_width(item.hint, hint_opts)
-			local spacings_in_item = 1 + (item.title_width > 0 and 1 or 0)
+			local text_block_width = math.max(item.title_width, item.subtitle_width)
+			local spacings_in_item = 1 + (text_block_width > 0 and 1 or 0)
 				+ (item.hint_width > 0 and 1 or 0) + (icon_width > 0 and 1 or 0)
-			local estimated_width = item.title_width + item.hint_width + icon_width
+			local estimated_width = text_block_width + item.hint_width + icon_width
 				+ (self.item_padding * spacings_in_item)
 			if estimated_width > max_width then max_width = estimated_width end
 		end
@@ -343,8 +378,14 @@ function Menu:update_dimensions()
 	local min_width = math.min(self.min_width, width_available)
 
 	for _, menu in ipairs(self.all) do
+		local menu_min_width = min_width
+		local custom_menu_min_width = tonumber(menu.menu_min_width)
+		if custom_menu_min_width and custom_menu_min_width > 0 then
+			menu_min_width = math.min(round(custom_menu_min_width * state.scale), width_available)
+		end
+
 		local width = math.max(menu.search and menu.search.max_width or 0, menu.max_width)
-		menu.width = round(clamp(min_width, width, width_available))
+		menu.width = round(clamp(menu_min_width, width, width_available))
 		local title_height = (menu.is_root and menu.title or menu.search) and
 			self.scroll_step + self.separator_size + 1 or 0
 		local footnote_height = self.font_size * 1.5
@@ -706,9 +747,12 @@ function Menu:activate_selected_item(shortcut, is_pointer)
 		elseif item.items then
 			-- 无 value 但有子菜单：展开子菜单
 			if not self.mouse_nav then
-				self:select_index(1, item.id)
+				self:select_index(item.selected_sub_index or 1, item.id)
 			end
 			self:activate_menu(item.id)
+			if item.selected_sub_index then
+				self:scroll_to_index(item.selected_sub_index, item.id, true)
+			end
 			self:tween(self.offset_x + menu.width / 2, 0, function(offset) self:set_offset_x(offset) end)
 			self.opacity = 1 -- in case tween above canceled fade in animation
 		end
@@ -1527,6 +1571,16 @@ function Menu:render()
 			local item_ay = content_rect.ay - menu.scroll_y + self.scroll_step * (index - 1)
 			local item_by = item_ay + self.item_height
 			local item_center_y = item_ay + (self.item_height / 2)
+			local subtitle_font_size = menu.subtitle_font_size_resolved or self.font_size_subtitle
+			local has_subtitle = item.subtitle and item.subtitle ~= ''
+			local title_y = item_center_y
+			local subtitle_y = nil
+			if has_subtitle then
+				local text_block_height = self.font_size + subtitle_font_size + self.subtitle_gap
+				local text_block_top = item_ay + math.max(0, (self.item_height - text_block_height) / 2)
+				title_y = text_block_top + (self.font_size / 2)
+				subtitle_y = title_y + (self.font_size / 2) + self.subtitle_gap + (subtitle_font_size / 2)
+			end
 			local item_clip = (item_ay < content_rect.ay or item_by > content_rect.by) and scroll_clip or nil
 			local content_ax, content_bx = content_rect.ax + self.item_padding,
 				content_rect.bx - self.item_padding
@@ -1552,6 +1606,10 @@ function Menu:render()
 				-- 自动展开子菜单（悬停激活）
 				if item.items and self.current ~= item then
 					self:activate_menu(item.id)
+					if item.selected_sub_index then
+						self:select_index(item.selected_sub_index, item.id)
+						self:scroll_to_index(item.selected_sub_index, item.id, true)
+					end
 				end
 			end
 
@@ -1693,9 +1751,10 @@ function Menu:render()
 				-- controls title & hint clipping proportional to the ratio of their widths
 				-- both title and hint get at least 50% of the width, unless they are smaller then that
 				local width = content_bx - content_ax - self.item_padding
-				local title_min = math.min(item.title_width, width * 0.5)
+				local text_block_width = math.max(item.title_width, item.subtitle_width)
+				local title_min = math.min(text_block_width, width * 0.5)
 				local hint_min = math.min(item.hint_width, width * 0.5)
-				local title_ratio = item.title_width / (item.title_width + item.hint_width)
+				local title_ratio = text_block_width / (text_block_width + item.hint_width)
 				title_clip_bx = math.min(
 					title_clip_bx,
 					round(content_ax + clamp(title_min, width * title_ratio, width - hint_min))
@@ -1728,13 +1787,33 @@ function Menu:render()
 				elseif item.align == 'center' then
 					title_x, align = content_ax + (title_clip_bx - content_ax) / 2, 5
 				end
-				ass:txt(title_x, item_center_y, align, item.ass_safe_title, {
+				ass:txt(title_x, title_y, align, item.ass_safe_title, {
 					size = self.font_size,
 					color = font_color,
 					italic = item.italic,
 					bold = item.bold,
 					wrap = 2,
 					opacity = menu_opacity * (item.muted and 0.5 or 1),
+					clip = clip,
+				})
+			end
+
+			-- 【新增】支持菜单项第二行副标题（用于 IPTV 当前节目）
+			if has_subtitle and subtitle_y then
+				item.ass_safe_subtitle = item.ass_safe_subtitle or ass_escape(item.subtitle)
+				local clip = '\\clip(' .. content_rect.ax .. ',' .. math.max(item_ay, content_rect.ay) .. ','
+					.. title_clip_bx .. ',' .. math.min(item_by, content_rect.by) .. ')'
+				local title_x, align = content_ax, 4
+				if item.align == 'right' then
+					title_x, align = title_clip_bx, 6
+				elseif item.align == 'center' then
+					title_x, align = content_ax + (title_clip_bx - content_ax) / 2, 5
+				end
+				ass:txt(title_x, subtitle_y, align, item.ass_safe_subtitle, {
+					size = subtitle_font_size,
+					color = font_color,
+					wrap = 2,
+					opacity = menu_opacity * (item.muted and 0.35 or 0.62),
 					clip = clip,
 				})
 			end

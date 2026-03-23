@@ -4,12 +4,14 @@
 
 ## 项目概述
 
-这是一个基于 **mpv 播放器** 和 **uosc 5.12 UI 框架** 深度定制的 IPTV 播放器，专为直播电视和回看功能设计。
+基于 **mpv 播放器** 和 **uosc 5.12 UI 框架** 深度定制的 IPTV 播放器，专为直播电视和回看功能设计。
 
-### 核心功能
+## 核心功能
 
-- **三级滑动菜单**：分组 → 频道 → EPG节目单 的嵌套菜单结构
+- **三级滑动菜单 + 频道搜索**：`F8` 顶部搜索框只匹配频道名，不会匹配 EPG 时间或节目标题；频道名下可显示当前节目副标题，并支持更紧凑的极简菜单样式；支持中文、拼音全拼和首字母搜索，如 `广东` / `guangdong` / `gd`，并按连续频道词边界匹配，例如 `dianying` / `dy` 可匹配 `电影`
 - **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
+- **EPG 回看搜索 (F9)**：跨频道搜索所有可回看的节目，按时间倒序排列
+- **手动强制刷新 EPG (Shift+F9)**：忽略缓存立即重新下载节目单
 - **智能右键**：根据上下文（IPTV/普通视频）显示不同的右键菜单
 - **历史记录**：自动保存/恢复上次播放的频道
 - **多平台支持**：Windows/Linux/macOS，自带 curl 工具链
@@ -22,6 +24,8 @@
 | UI 框架    | uosc 5.12 (Lua) | 现代 OSC 界面，已定制扩展 |
 | EPG 处理   | Lua + XML       | 节目单解析和回看 URL 生成 |
 | 数据存储   | JSON            | 频道历史记录持久化        |
+
+## 文件结构
 
 ```
 portable_config/
@@ -53,11 +57,7 @@ portable_config/
 └── 📁 fonts/                 # 字体文件
 ```
 
-## 文件结构
-
-## 关键修改点（必须维护）
-
-### 1. uosc 源码修改
+## 关键修改点（uosc 源码修改 必须维护）
 
 本项目对 uosc 5.12 源码进行了三处关键修改，以支持 IPTV 三级菜单功能：
 
@@ -65,7 +65,9 @@ portable_config/
 2. **`scripts/uosc/elements/Menu.lua`** - 修改 `activate_selected_item` 方法，支持同时执行 value 和展开子菜单
 3. **`scripts/uosc/lib/menus.lua`** - 修改 `toggle_menu_with_items` 函数，确保任何类型菜单都能正确关闭
 
-### 2. IPTV 核心脚本
+详细修改记录请查看 `UOSC_MODIFY_DIFF.md` 文件。
+
+## IPTV 核心脚本
 
 **`scripts/epg.lua`** 是主要业务逻辑，包含：
 
@@ -75,7 +77,12 @@ portable_config/
 - 回看 URL 生成（支持 OK影视、酷9、APTV 三种时间模板）
 - 频道历史记录管理
 
-## 开发规范
+## 核心功能
+
+- 解析 M3U `group-title` 分组、频道
+- 自动加载 `x-tvg-url` EPG（xml/xml.gz）
+- 支持 `catchup-source` 3 种回看模板
+- 支持 `epg_history.json` 记录最后播放频道（每个 m3u）
 
 ### 修改标记约定
 
@@ -100,11 +107,7 @@ portable_config/
 
 ### 必须同步更新的文件
 
-**当修改以下文件时，必须同步更新 `UOSC_MODIFY_DIFF.md`：**
-
-1. `scripts/uosc/main.lua`
-2. `scripts/uosc/elements/Menu.lua`
-3. `scripts/uosc/lib/menus.lua`
+**当修改以下文件时，`scripts/uosc/` 必须同步更新 `UOSC_MODIFY_DIFF.md`**
 
 **更新格式参考 `UOSC_MODIFY_DIFF.md` 现有结构。**
 
@@ -114,10 +117,28 @@ portable_config/
 
 1. **分析需求** - 确定是否需要修改 uosc 源码，还是仅扩展 epg.lua
 2. **编码实现** - 优先在 epg.lua 中实现，如需 UI 交互变更再修改 uosc
-3. **标记修改** - 在代码中添加 `【修改】`/`【新增】` 标记
-4. **更新文档** - 在 `UOSC_MODIFY_DIFF.md` 中添加修改记录
-5. **测试验证** - 让开发者使用 mpv --msg-level=ffmpeg=no tv.m3u 验证
-6. **版本记录** - 更新版本历史
+3. **更新文档** - 在 `UOSC_MODIFY_DIFF.md` 中添加修改记录
+4. **测试验证** - 让开发者使用 mpv --msg-level=ffmpeg=no tv.m3u 验证
+5. **版本记录** - 更新版本历史
+
+## 规范 Git 提交
+
+使用约定式提交格式：
+
+- feat: 新增功能
+- fix: 修复问题
+- refactor: 重构代码
+- style: 样式/格式调整
+- docs: 文档修改
+- 使用 SSH 方式
+- 自动写 commit 信息
+
+版本号规则：
+
+- fix → 升修订号 x.y.z+1
+- feat → 升次版本 x.y+1.0
+- 重大重构 → 升主版本 x+1.0.0
+  禁止随意跳版本。
 
 ### 调试方法
 
@@ -142,25 +163,14 @@ msg-level=all=debug
 
 ### 1. uosc 源码修改
 
-- **不要修改未标记的文件**，除非有充分理由
 - **修改 uosc 源码后必须更新 `UOSC_MODIFY_DIFF.md`**
 - **保留原始注释**，在附近添加中文修改说明
 - **向后兼容**：确保修改不破坏原有功能
 
 ### 2. IPTV 功能扩展
 
-- **优先在 `epg.lua` 中实现新功能**
-- **利用现有 API**：`open-menu`、`expand-submenu`、`select-menu-item`
 - **考虑多平台兼容**：Windows PowerShell 和 Linux/macOS gzip 解压
 - **错误处理**：网络请求失败、文件读写权限、数据解析异常
-
-### 3. 升级 uosc 版本
-
-1. **备份修改**：复制 `UOSC_MODIFY_DIFF.md`，导出 git diff
-2. **替换文件**：用新版本替换 `scripts/uosc/` 目录
-3. **重新应用修改**：参考 `UOSC_MODIFY_DIFF.md` 逐个文件对比
-4. **API 兼容性检查**：验证 `open-menu`、`expand-submenu` 接口
-5. **功能测试**：IPTV 菜单、频道切换、EPG 展开、回看功能
 
 ## API 参考
 
@@ -206,8 +216,8 @@ mp.commandv("script-message-to", "uosc", "select-menu-item", menu_type, index, p
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.4（2026-03-21）
-- **最后更新**：2026-03-21
+- **IPTV 版本**：V1.6.1（2026-03-23）
+- **最后更新**：2026-03-23
 
 ## 相关文档
 

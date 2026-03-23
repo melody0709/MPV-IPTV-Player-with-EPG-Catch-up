@@ -1,5 +1,5 @@
 --[[
-    mpv + uosc 5.12 IPTV 脚本 V1.4
+        mpv + uosc 5.12 IPTV 脚本 V1.6.1
   重构：三级滑动菜单结构 - 分组 > 频道 > EPG回看
 ]]
 
@@ -10,7 +10,11 @@ local opt = require 'mp.options'
 local options = {
     epg_download_url = "",
     epg_cache_refresh_start = "00:04",
-    epg_cache_refresh_interval_hours = 7
+    epg_cache_refresh_interval_hours = 7,
+    menu_subtitle_font_size = 0,
+    menu_level1_min_width = 0,
+    menu_level2_min_width = 0,
+    menu_level3_min_width = 0
 }
 opt.read_options(options)
 
@@ -42,6 +46,20 @@ local channel_search_cache = {}
 local function trim(s)
     if not s then return "" end
     return s:match("^%s*(.-)%s*$")
+end
+
+local function get_positive_integer_option(value)
+    local number = tonumber(value)
+    if not number then
+        return nil
+    end
+
+    number = math.floor(number)
+    if number <= 0 then
+        return nil
+    end
+
+    return number
 end
 
 local function utf8_char_bytes(str, index)
@@ -730,6 +748,35 @@ local function format_display_time(time_str)
     if h and m then return h .. ":" .. m else return "" end
 end
 
+local function get_current_program_for_channel(ch, now_utc)
+    if not ch or not ch.tvg_id or ch.tvg_id == "" then
+        return nil, nil
+    end
+
+    local epg_list = state.epg_data[ch.tvg_id]
+    if not epg_list or #epg_list == 0 then
+        return nil, nil
+    end
+
+    local reference_utc = now_utc or current_utc_string()
+    for index, prog in ipairs(epg_list) do
+        if prog.start_utc ~= "" and prog.end_utc ~= "" and prog.start_utc <= reference_utc and reference_utc <= prog.end_utc then
+            return prog, index
+        end
+    end
+
+    return nil, nil
+end
+
+local function build_channel_now_playing_subtitle(ch, now_utc)
+    local prog = get_current_program_for_channel(ch, now_utc)
+    if not prog then
+        return nil
+    end
+
+    return prog.title
+end
+
 local function parse_epg_string(xml_str)
     mp.msg.info("EPG 内容预览 (前300字符): " .. xml_str:sub(1,300))
     state.epg_data = {}
@@ -989,22 +1036,26 @@ local function build_utility_menu_items()
     }
 end
 
-local function build_channel_menu_item(group_name, ch)
+local function build_channel_menu_item(group_name, ch, now_utc)
     local has_epg = state.epg_data[ch.tvg_id] and #state.epg_data[ch.tvg_id] > 0
-    local has_catchup = ch.catchup ~= "" and ch.catchup:find("%$%{")
+    local current_program_subtitle = build_channel_now_playing_subtitle(ch, now_utc)
 
     local item = {
         title = ch.name,
+        subtitle = current_program_subtitle,
         search_key = ch.name,
         value = {"loadfile", ch.url},
-        icon = "live_tv",
         id = "channel_" .. ch.name,
-        hint = group_name,
     }
 
     if has_epg then
-        item.hint = has_catchup and (group_name .. " | 回看▶") or (group_name .. " | EPG")
         item.items = build_channel_epg_items(ch)
+        local _, current_prog_index = get_current_program_for_channel(ch, now_utc)
+        if current_prog_index then
+            item.selected_sub_index = current_prog_index + 1  -- +1 因为EPG列表第一项是分隔线"节目单"
+        else
+            item.selected_sub_index = 2  -- 未命中当前时段时默认定位到第一条节目
+        end
     end
 
     return item
@@ -1030,6 +1081,7 @@ end
 local function build_channel_search_items(query)
     local items = {}
     local normalized_query = trim(query or ""):lower()
+    local now_utc = current_utc_string()
 
     if normalized_query == "" then
         return nil
@@ -1039,7 +1091,7 @@ local function build_channel_search_items(query)
         local channels = state.groups[group_name]
         for _, ch in ipairs(channels) do
             if ch.name and channel_name_matches_query(ch.name, normalized_query) then
-                table.insert(items, build_channel_menu_item(group_name, ch))
+                table.insert(items, build_channel_menu_item(group_name, ch, now_utc))
             end
         end
     end
@@ -1057,6 +1109,9 @@ local function build_channel_search_items(query)
 end
 
 local function update_iptv_menu_items(items)
+    local menu_level2_min_width = get_positive_integer_option(options.menu_level2_min_width)
+    local menu_subtitle_font_size = get_positive_integer_option(options.menu_subtitle_font_size)
+
     local menu_data = {
         id = "iptv_root",
         type = "iptv_menu",
@@ -1068,6 +1123,13 @@ local function update_iptv_menu_items(items)
         search_input_target = "iptv_root",
         on_search = {"script-message-to", "epg", "iptv-channel-search"}
     }
+
+    if menu_level2_min_width then
+        menu_data.menu_min_width = menu_level2_min_width
+    end
+    if menu_subtitle_font_size then
+        menu_data.subtitle_font_size = menu_subtitle_font_size
+    end
 
     mp.commandv("script-message-to", "uosc", "update-menu", utils.format_json(menu_data))
 end
@@ -1162,23 +1224,26 @@ build_channel_epg_items = function(ch)
         -- 【修改】回看资格判定延迟 2 分钟，兼容节目整点刚开始时的回看源稳定性
         local catchup_ready_utc = catchup_ready_utc_string()
         for _, prog in ipairs(epg_list) do
-            local display_title = prog.display_start .. " " .. prog.title
+            local epg_subtitle = prog.display_start
+            if prog.display_end and prog.display_end ~= "" then
+                epg_subtitle = epg_subtitle .. " - " .. prog.display_end
+            end
+
             if ch.catchup ~= "" and ch.catchup:find("%$%{") and prog.start_utc ~= "" and prog.end_utc ~= "" and prog.start_utc <= catchup_ready_utc then
                 local catchup_url = ch.catchup
                 catchup_url = replace_catchup_time_params(catchup_url, prog.start_utc, prog.end_utc)
                 table.insert(epg_items, {
-                    title = display_title,
+                    title = prog.title,
+                    subtitle = epg_subtitle,
                     value = {"script-message-to", "epg", "play-catchup",
-                        catchup_url, ch.catchup, prog.start_utc, prog.end_utc, ch.url},
-                    hint = "回看",
-                    icon = "history"
+                        catchup_url, ch.catchup, prog.start_utc, prog.end_utc, ch.url}
                 })
             else
                 table.insert(epg_items, {
-                    title = display_title,
+                    title = prog.title,
+                    subtitle = epg_subtitle,
                     value = {"loadfile", ch.url},
-                    muted = true,
-                    hint = "直播"
+                    muted = true
                 })
             end
         end
@@ -1207,6 +1272,11 @@ build_main_menu = function()
     local current_channel_idx = nil
     local current_has_epg = false
     local current_epg_idx = nil
+    local now_utc = current_utc_string()
+    local menu_subtitle_font_size = get_positive_integer_option(options.menu_subtitle_font_size)
+    local menu_level1_min_width = get_positive_integer_option(options.menu_level1_min_width)
+    local menu_level2_min_width = get_positive_integer_option(options.menu_level2_min_width)
+    local menu_level3_min_width = get_positive_integer_option(options.menu_level3_min_width)
     
     for group_idx, group_name in ipairs(state.group_names) do
         local channels = state.groups[group_name]
@@ -1222,17 +1292,13 @@ build_main_menu = function()
             
             -- 判断频道是否有 EPG 数据及回看功能
             local has_epg = state.epg_data[ch.tvg_id] and #state.epg_data[ch.tvg_id] > 0
+            local current_prog, current_prog_index = get_current_program_for_channel(ch, now_utc)
             
             if is_current and has_epg then
                 current_has_epg = true
                 -- 找到当前时间点的节目索引
-                local now_utc = current_utc_string()
-                local epg_list = state.epg_data[ch.tvg_id]
-                for i, prog in ipairs(epg_list) do
-                    if prog.start_utc <= now_utc and now_utc <= prog.end_utc then
-                        current_epg_idx = i + 1  -- +1 因为EPG列表第一项是分隔线"节目单"
-                        break
-                    end
+                if current_prog and current_prog_index then
+                    current_epg_idx = current_prog_index + 1  -- +1 因为EPG列表第一项是分隔线"节目单"
                 end
                 -- 如果没找到当前节目，默认选第一个节目（索引2）
                 if not current_epg_idx then
@@ -1240,17 +1306,41 @@ build_main_menu = function()
                 end
             end
             
-            table.insert(channel_items, build_channel_menu_item(group_name, ch))
+            table.insert(channel_items, build_channel_menu_item(group_name, ch, now_utc))
         end
-        
-        table.insert(items, {
+
+        local group_item = {
             title = group_name,
             hint = #channels .. " 频道",
-            icon = "folder",
             bold = true,
             id = "group_" .. group_name,
             items = channel_items  -- 嵌套频道列表
-        })
+        }
+        if menu_level2_min_width then
+            group_item.menu_min_width = menu_level2_min_width
+        end
+        if menu_subtitle_font_size then
+            group_item.subtitle_font_size = menu_subtitle_font_size
+        end
+
+        table.insert(items, group_item)
+    end
+
+    if menu_level3_min_width or menu_subtitle_font_size then
+        for _, group_item in ipairs(items) do
+            if group_item.items then
+                for _, channel_item in ipairs(group_item.items) do
+                    if channel_item.items then
+                        if menu_level3_min_width then
+                            channel_item.menu_min_width = menu_level3_min_width
+                        end
+                        if menu_subtitle_font_size then
+                            channel_item.subtitle_font_size = menu_subtitle_font_size
+                        end
+                    end
+                end
+            end
+        end
     end
     
     local menu_data = {
@@ -1265,6 +1355,13 @@ build_main_menu = function()
         search_input_target = "iptv_root",
         on_search = {"script-message-to", "epg", "iptv-channel-search"}
     }
+
+    if menu_level1_min_width then
+        menu_data.menu_min_width = menu_level1_min_width
+    end
+    if menu_subtitle_font_size then
+        menu_data.subtitle_font_size = menu_subtitle_font_size
+    end
     
     return menu_data, current_group_idx, current_channel_idx, current_has_epg, current_epg_idx
 end

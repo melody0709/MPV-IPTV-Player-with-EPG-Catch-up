@@ -96,6 +96,104 @@ end)
 
 ### 2. `scripts/uosc/elements/Menu.lua`
 
+#### 修改点 0：菜单项支持双行副标题（频道名下显示当前节目）
+
+**位置：** 约第 1-20 行（类型定义）、约第 295-330 行（尺寸计算）、约第 1520-1745 行（菜单项绘制）
+
+**修改原因：** IPTV 三折叠菜单需要像机顶盒一样，在频道名下方用更小一号的文字显示当前节目；后续又针对二级菜单宽度做了紧凑化处理，仅保留节目名。
+
+**修改内容：**
+
+1. **菜单项结构新增 `subtitle` 字段：**
+```lua
+---@alias MenuDataItem {title?: string; subtitle?: string; hint?: string; ...}
+```
+
+2. **尺寸计算支持双行文本：**
+```lua
+-- 【新增】如果菜单中存在 subtitle，则自动增大当前菜单实例的 item_height
+local base_item_height = round(options.menu_item_height * state.scale)
+self.font_size = round(base_item_height * 0.48 * options.font_scale)
+self.font_size_subtitle = math.max(8, self.font_size - round(3 * state.scale))
+self.subtitle_gap = round(2 * state.scale)
+```
+
+3. **菜单项绘制改为“标题 + 副标题”两行布局：**
+```lua
+-- 【新增】支持菜单项第二行副标题（用于 IPTV 当前节目）
+if has_subtitle and subtitle_y then
+    ass:txt(title_x, subtitle_y, align, item.ass_safe_subtitle, {
+        size = self.font_size_subtitle,
+        opacity = menu_opacity * 0.62,
+    })
+end
+```
+
+**用途：** 让 `epg.lua` 传入的频道副标题能在 `uosc` 菜单里以真正的第二行渲染，而不是把所有内容挤在一行里。
+
+#### 修改点 0.0：菜单级副标题字号与最小宽度支持
+
+**位置：** 约第 5-15 行（类型定义）、约第 295-360 行（尺寸计算与宽度计算）、约第 1550-1770 行（副标题绘制）
+
+**修改原因：** IPTV 三级菜单需要在 `epg.conf` 内分别控制三级最小宽度，并可自定义二级/三级副标题字体大小。
+
+**修改内容：**
+
+1. **菜单结构新增字段：**
+```lua
+---@alias MenuData ... menu_min_width?: number; subtitle_font_size?: number; ...
+```
+
+2. **按菜单级别计算宽度：**
+```lua
+local custom_menu_min_width = tonumber(menu.menu_min_width)
+if custom_menu_min_width and custom_menu_min_width > 0 then
+    menu_min_width = math.min(round(custom_menu_min_width * state.scale), width_available)
+end
+menu.width = round(clamp(menu_min_width, width, width_available))
+```
+
+3. **按菜单级别计算副标题字号：**
+```lua
+local configured_subtitle_font_size = tonumber(menu.subtitle_font_size)
+menu.subtitle_font_size_resolved = configured_subtitle_font_size and ... or self.font_size_subtitle
+ass:txt(..., {size = subtitle_font_size})
+```
+
+**用途：** 让业务脚本能针对一级/二级/三级菜单独立设置最小宽度，并控制副标题字号。
+
+#### 修改点 0.1：移除默认子菜单右箭头
+
+**位置：** 约第 188-200 行（菜单序列化初始化区域）
+
+**修改原因：** IPTV 频道菜单做了极简化收口，希望去掉所有子菜单默认 `>` 箭头，只保留业务脚本显式指定的图标。
+
+**修改内容：**
+
+```lua
+-- 【修改】移除所有子菜单默认右箭头，仅保留显式配置的图标
+menu.icon = menu_data.icon
+```
+
+**用途：** 让所有菜单层级默认不再显示 `chevron_right`，减少视觉噪音并压缩右侧留白。
+
+#### 修改点 0.2：悬停自动展开后，当前时段居中滚动
+
+**位置：** 约第 730-770 行（`activate_selected_item` 子菜单展开分支）、约第 1595-1615 行（鼠标悬停自动展开分支）
+
+**修改原因：** IPTV 三级 EPG 菜单在自动定位到“当前时段”后，还需要进一步把该项滚动到可视区域中间，避免定位项落在边缘不易观察。
+
+**修改内容：**
+
+```lua
+-- 【新增】展开后将 selected_sub_index 对应项滚动到可视中间
+if item.selected_sub_index then
+    self:scroll_to_index(item.selected_sub_index, item.id, true)
+end
+```
+
+**用途：** 鼠标滑过频道触发三级 EPG 自动展开时，当前时段会自动“选中 + 居中可见”，提升连续浏览体验。
+
 #### 修改点 1：搜索框绘制逻辑优化（EPG搜索优化）
 
 **位置：** 约第 1795-1830 行（Query/Placeholder 绘制区域）
@@ -538,6 +636,8 @@ mp.osd_message("提示信息", 3)  -- 显示3秒
 
 | 版本   | 日期       | 修改内容                                                     |
 | ------ | ---------- | ------------------------------------------------------------ |
+| V1.6   | 2026-03-23 | 支持 `epg.conf` 分级菜单最小宽度与副标题字号配置；三级 EPG 菜单改为标题+副标题（日期时间）模式 |
+| V1.5   | 2026-03-23 | 新增频道当前节目双行副标题，并完成 IPTV 菜单极简化（去时间、去 `回看/EPG`、去 `folder`、去默认 `>` 箭头） |
 | V1.4   | 2026-03-21 | 新增 IPTV 菜单频道搜索（中文/拼音/首字母），并让自动展开的 EPG 子菜单将键盘搜索转发到根菜单 |
 | V1.3   | 2026-03-21 | 新增 EPG 回看搜索菜单 (F9)，搜索框光标左对齐优化，`search_key` 支持 |
 | V1.2   | 2026-03-20 | 三级滑动菜单结构重构，新增频道历史记忆，EPG回看功能完善      |
@@ -545,5 +645,5 @@ mp.osd_message("提示信息", 3)  -- 显示3秒
 
 ---
 
-*文档生成时间：2026-03-21*
+*文档生成时间：2026-03-23*
 *基于 uosc 5.12.0 定制*
