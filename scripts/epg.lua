@@ -31,6 +31,8 @@ local state = {
     history_file = "epg_history.json",
     channel_history = {},
     auto_playing = false,  -- 标记是否正在自动播放历史频道
+    selected_group_name = nil,
+    selected_channel_index = nil,
     -- 当前回看上下文（用于续播）
     -- 结构: {live_url, catchup_template, start_utc, last_end_utc, last_duration}
     current_catchup = nil
@@ -39,6 +41,7 @@ local state = {
 local build_main_menu
 local build_channel_epg_items
 local build_channel_date_bucket_items
+local get_channel_by_position
 local channel_search_romanization = nil
 local channel_search_cache = {}
 
@@ -991,7 +994,85 @@ local function get_menu_active_channel()
         end
     end
 
+    local selected_channel = get_channel_by_position(state.selected_group_name, state.selected_channel_index)
+    if selected_channel then
+        return selected_channel
+    end
+
     return state.current_channel
+end
+
+local function set_selected_channel_position(group_name, channel_index)
+    local channels = group_name and state.groups[group_name] or nil
+    if not channels or not channel_index or not channels[channel_index] then
+        state.selected_group_name = nil
+        state.selected_channel_index = nil
+        return nil
+    end
+
+    state.selected_group_name = group_name
+    state.selected_channel_index = channel_index
+    return channels[channel_index]
+end
+
+local function find_channel_position_by_url(channel_url)
+    if not channel_url or channel_url == "" then
+        return nil, nil
+    end
+
+    for _, group_name in ipairs(state.group_names) do
+        local channels = state.groups[group_name]
+        if channels then
+            for channel_index, ch in ipairs(channels) do
+                if ch.url == channel_url then
+                    return group_name, channel_index
+                end
+            end
+        end
+    end
+
+    return nil, nil
+end
+
+get_channel_by_position = function(group_name, channel_index)
+    local channels = group_name and state.groups[group_name] or nil
+    if not channels or not channel_index then
+        return nil
+    end
+
+    return channels[channel_index]
+end
+
+local function play_live_channel(channel, show_osd, group_name, channel_index)
+    if not channel or not channel.url or channel.url == "" then
+        return false
+    end
+
+    state.current_catchup = nil
+
+    if group_name and channel_index then
+        set_selected_channel_position(group_name, channel_index)
+    else
+        local resolved_group_name, resolved_channel_index = find_channel_position_by_url(channel.url)
+        set_selected_channel_position(resolved_group_name, resolved_channel_index)
+    end
+
+    local channel_changed = not state.current_channel or state.current_channel.url ~= channel.url
+    state.current_channel = channel
+
+    if channel_changed then
+        mp.msg.info("当前频道: " .. channel.name)
+        if not state.auto_playing then
+            save_current_channel_to_history()
+        end
+    end
+
+    if show_osd then
+        show_top_center_osd(channel.name, 2)
+    end
+
+    mp.commandv("loadfile", channel.url)
+    return true
 end
 
 local function get_catchup_reference_utc()
@@ -1296,7 +1377,7 @@ local function build_utility_menu_items()
     }
 end
 
-local function build_channel_menu_item(group_name, ch, now_utc, is_current_channel, forced_preload_bucket_key)
+local function build_channel_menu_item(group_name, channel_index, ch, now_utc, is_current_channel, forced_preload_bucket_key)
     local has_epg = state.epg_data[ch.tvg_id] and #state.epg_data[ch.tvg_id] > 0
     local current_program_subtitle = build_channel_now_playing_subtitle(ch, now_utc)
 
@@ -1304,7 +1385,7 @@ local function build_channel_menu_item(group_name, ch, now_utc, is_current_chann
         title = ch.name,
         subtitle = current_program_subtitle,
         search_key = ch.name,
-        value = {"loadfile", ch.url},
+        value = {"script-message-to", "epg", "play-live-channel", ch.url, "yes", group_name, tostring(channel_index)},
         id = "channel_" .. ch.name,
     }
 
@@ -1370,9 +1451,9 @@ local function build_channel_search_items(query)
 
     for _, group_name in ipairs(state.group_names) do
         local channels = state.groups[group_name]
-        for _, ch in ipairs(channels) do
+        for channel_index, ch in ipairs(channels) do
             if ch.name and channel_name_matches_query(ch.name, normalized_query) then
-                local channel_item = build_channel_menu_item(group_name, ch, now_utc)
+                local channel_item = build_channel_menu_item(group_name, channel_index, ch, now_utc)
                 table.insert(items, channel_item)
             end
         end
@@ -1435,6 +1516,8 @@ local function parse_m3u(path)
     state.group_names = {}
     state.channel_bucket_cache = {}
     channel_search_cache = {}
+    state.selected_group_name = nil
+    state.selected_channel_index = nil
     state.epg_url = trim(options.epg_download_url)
     if state.epg_url ~= "" then
         mp.msg.info("使用配置的 EPG 下载连接: " .. state.epg_url)
@@ -1480,6 +1563,8 @@ local function parse_m3u(path)
         state.auto_playing = true  -- 标记正在自动播放
         -- 先设置 current_channel，这样菜单能正确识别当前频道
         state.current_channel = last_channel
+        local last_group_name, last_channel_index = find_channel_position_by_url(last_channel.url)
+        set_selected_channel_position(last_group_name, last_channel_index)
         mp.add_timeout(0.4, function()
             mp.commandv("loadfile", last_channel.url)
             -- 播放命令发送后，延迟清除标记（给路径变化监听器足够时间）
@@ -1529,7 +1614,7 @@ build_channel_epg_items = function(ch, programs)
                 table.insert(epg_items, {
                     title = prog.title,
                     subtitle = epg_subtitle,
-                    value = {"loadfile", ch.url},
+                    value = {"script-message-to", "epg", "play-live-channel", ch.url, "yes"},
                     muted = true
                 })
             end
@@ -1649,7 +1734,7 @@ build_main_menu = function(preload_target)
                 forced_preload_bucket_key = preload_target.bucket_key
             end
 
-            local channel_item, channel_meta = build_channel_menu_item(group_name, ch, reference_utc, is_current, forced_preload_bucket_key)
+            local channel_item, channel_meta = build_channel_menu_item(group_name, channel_idx, ch, reference_utc, is_current, forced_preload_bucket_key)
             if is_current and channel_meta and channel_meta.has_epg then
                 current_has_epg = true
                 if channel_meta.active_bucket_key then
@@ -1831,25 +1916,23 @@ local function switch_channel_in_current_group(direction)
         return
     end
 
-    local current_channel = get_menu_active_channel()
-    if not current_channel or not current_channel.group then
-        return
-    end
+    local current_group_name = state.selected_group_name
+    local current_index = state.selected_channel_index
 
-    local group_channels = state.groups[current_channel.group]
-    if not group_channels or #group_channels == 0 then
-        return
-    end
-
-    local current_index = nil
-    for index, ch in ipairs(group_channels) do
-        if ch.url == current_channel.url then
-            current_index = index
-            break
+    if not current_group_name or not current_index then
+        local current_channel = get_menu_active_channel()
+        if not current_channel or not current_channel.group then
+            return
         end
+        current_group_name, current_index = find_channel_position_by_url(current_channel.url)
     end
 
-    if not current_index then
+    if not current_group_name or not current_index then
+        return
+    end
+
+    local group_channels = state.groups[current_group_name]
+    if not group_channels or #group_channels == 0 then
         return
     end
 
@@ -1863,8 +1946,7 @@ local function switch_channel_in_current_group(direction)
         return
     end
 
-    show_top_center_osd(target_channel.name, 2)
-    mp.commandv("loadfile", target_channel.url)
+    play_live_channel(target_channel, true, current_group_name, target_index)
 end
 
 -- 注册脚本绑定 (快捷键在 input.conf 中配置)
@@ -1877,6 +1959,24 @@ mp.add_key_binding(nil, "channel-group-next", function()
 end)
 mp.register_script_message("iptv-channel-search", function(query)
     handle_iptv_channel_search(query)
+end)
+mp.register_script_message("play-live-channel", function(channel_url, show_osd, group_name, channel_index)
+    local numeric_channel_index = tonumber(channel_index)
+    local positioned_channel = get_channel_by_position(group_name, numeric_channel_index)
+    if positioned_channel and positioned_channel.url == channel_url then
+        play_live_channel(positioned_channel, show_osd == "yes", group_name, numeric_channel_index)
+        return
+    end
+
+    local channel = find_channel_by_url(channel_url)
+    if channel then
+        play_live_channel(channel, show_osd == "yes", group_name, numeric_channel_index)
+        return
+    end
+
+    if channel_url and channel_url ~= "" then
+        mp.commandv("loadfile", channel_url)
+    end
 end)
 mp.register_script_message("open-channel-date-bucket", function(channel_url, bucket_key, reference_utc)
     show_channel_date_bucket_menu(channel_url, bucket_key, reference_utc)
@@ -1909,8 +2009,20 @@ mp.observe_property("path", "string", function(name, path)
     for group_name, channels in pairs(state.groups) do
         for _, ch in ipairs(channels) do
             if ch.url == path or (path and path:find(ch.url, 1, true)) then
+                local selected_channel = get_channel_by_position(state.selected_group_name, state.selected_channel_index)
+                if selected_channel and selected_channel.url ~= ch.url then
+                    return
+                end
+
                 -- 命中直播URL：清空回看上下文
                 state.current_catchup = nil
+                local matched_group_name, matched_channel_index = find_channel_position_by_url(ch.url)
+                if selected_channel and selected_channel.url == ch.url then
+                    matched_group_name = state.selected_group_name
+                    matched_channel_index = state.selected_channel_index
+                    ch = selected_channel
+                end
+                set_selected_channel_position(matched_group_name, matched_channel_index)
                 -- 只有当频道真正改变时才更新
                 if not state.current_channel or state.current_channel.url ~= ch.url then
                     state.current_channel = ch
