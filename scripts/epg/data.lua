@@ -298,11 +298,47 @@ function save_channel_history()
         local content = utils.format_json(state.channel_history)
         file:write(content)
         file:close()
+        state.history_dirty = false
         mp.msg.info("频道历史记录已保存成功: " .. history_path)
+        return true
     else
         mp.msg.error("无法保存频道历史记录: " .. tostring(err))
         mp.msg.error("目标路径: " .. history_path)
+        return false
     end
+end
+
+function schedule_channel_history_save(channel_name)
+    state.history_dirty = true
+
+    if history_save_timer then
+        history_save_timer:kill()
+        history_save_timer = nil
+    end
+
+    history_save_timer = mp.add_timeout(HISTORY_SAVE_DELAY, function()
+        history_save_timer = nil
+        flush_channel_history()
+    end)
+
+    if channel_name and channel_name ~= "" then
+        mp.msg.info(string.format("频道历史记录已加入延迟保存队列(%.1f秒): %s", HISTORY_SAVE_DELAY, channel_name))
+    else
+        mp.msg.info(string.format("频道历史记录已加入延迟保存队列(%.1f秒)", HISTORY_SAVE_DELAY))
+    end
+end
+
+function flush_channel_history()
+    if history_save_timer then
+        history_save_timer:kill()
+        history_save_timer = nil
+    end
+
+    if not state.history_dirty then
+        return false
+    end
+
+    return save_channel_history()
 end
 
 -- 获取 m3u 文件的唯一标识（使用文件路径的哈希）
@@ -323,8 +359,7 @@ function save_current_channel_to_history()
         group = state.current_channel.group,
         timestamp = os.time()
     }
-    save_channel_history()
-    mp.msg.info("已保存频道到历史记录: " .. state.current_channel.name)
+    schedule_channel_history_save(state.current_channel.name)
 end
 
 -- 从历史记录加载上次播放的频道

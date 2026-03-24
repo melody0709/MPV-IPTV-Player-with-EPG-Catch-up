@@ -1,5 +1,5 @@
 --[[
-                mpv + uosc 5.12 IPTV 脚本 V1.7.2
+                mpv + uosc 5.12 IPTV 脚本 V1.7.3
     重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
     模块化版本：main.lua 入口 + utils / data / playback / menu 子模块
 ]]
@@ -35,6 +35,7 @@ state = {
     current_channel = nil,
     history_file = "epg_history.json",
     channel_history = {},
+    history_dirty = false,
     auto_playing = false,  -- 标记是否正在自动播放历史频道
     selected_group_name = nil,
     selected_channel_index = nil,
@@ -56,12 +57,14 @@ display_date_cache = {}
 timezone_offset_cache = {}
 local_day_start_cache = {}
 top_center_osd_timer = nil
+history_save_timer = nil
 
 -- ==================== 菜单延迟常量 ====================
 
 MENU_RENDER_DELAY = 0.005
 MENU_EXPAND_DELAY = 0.005
 MENU_SELECT_DELAY = 0.005
+HISTORY_SAVE_DELAY = 2.0
 
 -- ==================== 日期桶常量 ====================
 
@@ -272,6 +275,10 @@ end)
 
 mp.register_event("file-loaded", function()
     state.pending_hls_retry = nil
+end)
+
+mp.register_event("shutdown", function()
+    flush_channel_history()
 end)
 
 -- end-file 事件驱动回看续播
