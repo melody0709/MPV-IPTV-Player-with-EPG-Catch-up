@@ -9,6 +9,7 @@
 ## 核心功能
 
 - **四级滑动菜单 + 频道搜索**：`F8` 顶部搜索框只匹配频道名，不会匹配 EPG 时间或节目标题；菜单结构为 分组 > 频道 > 日期桶 > EPG，日期桶支持 明天 / 今天 / 昨天 / 星期X（附月日副标题）；搜索支持中文、拼音全拼和首字母，如 `广东` / `guangdong` / `gd`、`东莞` / `dongguan` / `dg`
+- **组内快速切台 (PgUp / PgDn)**：直播时可在当前频道组内切到上一台/下一台，行为与鼠标点选频道一致；切台后 OSD 会在视频顶部居中显示当前频道名；回看状态下不执行切台，只显示提示
 - **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
 - **EPG 回看搜索 (F9)**：跨频道搜索所有可回看的节目，按时间倒序排列
 - **手动强制刷新 EPG (Shift+F9)**：忽略缓存立即重新下载节目单
@@ -200,6 +201,7 @@ mp.commandv("script-message-to", "uosc", "select-menu-item", menu_type, index, p
 - `fetch_and_parse_epg_async()` - 异步获取并解析 EPG
 - `build_main_menu()` - 构建四级菜单数据结构
 - `show_iptv_menu()` - 显示 IPTV 菜单（绑定 F8 和鼠标右键）
+- `switch_channel_in_current_group(direction)` - 在当前频道组内切换直播频道（绑定 PgUp/PgDn）
 
 ## 快速检查清单
 
@@ -223,7 +225,7 @@ mp.commandv("script-message-to", "uosc", "select-menu-item", menu_type, index, p
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.6.4（2026-03-24）
+- **IPTV 版本**：V1.6.5（2026-03-24）
 - **最后更新**：2026-03-24
 
 ## 相关文档

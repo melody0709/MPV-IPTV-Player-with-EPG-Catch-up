@@ -1,5 +1,5 @@
 --[[
-                mpv + uosc 5.12 IPTV 脚本 V1.6.4
+                mpv + uosc 5.12 IPTV 脚本 V1.6.5
     重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
 ]]
 
@@ -62,6 +62,35 @@ local function get_positive_integer_option(value)
     end
 
     return number
+end
+
+local function escape_ass_text(text)
+    if not text then
+        return ""
+    end
+
+    return tostring(text)
+        :gsub("\\", "\\\\")
+        :gsub("{", "\\{")
+        :gsub("}", "\\}")
+        :gsub("\n", "\\N")
+end
+
+local top_center_osd_timer = nil
+
+local function show_top_center_osd(text, duration)
+    if top_center_osd_timer then
+        top_center_osd_timer:kill()
+        top_center_osd_timer = nil
+    end
+
+    local ass_text = "{\\an8}" .. escape_ass_text(text)
+    mp.set_osd_ass(0, 0, ass_text)
+
+    top_center_osd_timer = mp.add_timeout(duration or 2, function()
+        mp.set_osd_ass(0, 0, "")
+        top_center_osd_timer = nil
+    end)
 end
 
 local function utf8_char_bytes(str, index)
@@ -1795,8 +1824,57 @@ local function show_channel_date_bucket_menu(channel_url, bucket_key, reference_
     end)
 end
 
+-- 【新增】支持 PageUp/PageDown 在当前频道组内切换直播频道，回看场景下不响应。
+local function switch_channel_in_current_group(direction)
+    if state.current_catchup then
+        mp.osd_message("回看中不支持组内切台", 2)
+        return
+    end
+
+    local current_channel = get_menu_active_channel()
+    if not current_channel or not current_channel.group then
+        return
+    end
+
+    local group_channels = state.groups[current_channel.group]
+    if not group_channels or #group_channels == 0 then
+        return
+    end
+
+    local current_index = nil
+    for index, ch in ipairs(group_channels) do
+        if ch.url == current_channel.url then
+            current_index = index
+            break
+        end
+    end
+
+    if not current_index then
+        return
+    end
+
+    local target_index = current_index + direction
+    if target_index < 1 or target_index > #group_channels then
+        return
+    end
+
+    local target_channel = group_channels[target_index]
+    if not target_channel or not target_channel.url or target_channel.url == "" then
+        return
+    end
+
+    show_top_center_osd(target_channel.name, 2)
+    mp.commandv("loadfile", target_channel.url)
+end
+
 -- 注册脚本绑定 (快捷键在 input.conf 中配置)
 mp.add_key_binding(nil, "show-iptv-menu", show_iptv_menu)
+mp.add_key_binding(nil, "channel-group-prev", function()
+    switch_channel_in_current_group(-1)
+end)
+mp.add_key_binding(nil, "channel-group-next", function()
+    switch_channel_in_current_group(1)
+end)
 mp.register_script_message("iptv-channel-search", function(query)
     handle_iptv_channel_search(query)
 end)
@@ -1849,7 +1927,7 @@ mp.observe_property("path", "string", function(name, path)
 
 end)
 
-mp.msg.info("IPTV 脚本已加载: 鼠标右键=三级选台菜单 (分组 > 频道 > EPG)")
+mp.msg.info("IPTV 脚本已加载: 鼠标右键=四级选台菜单 (分组 > 频道 > 日期桶 > EPG)")
 
 -- 打印调试信息
 mp.msg.info("===== EPG 脚本初始化调试信息 =====")
