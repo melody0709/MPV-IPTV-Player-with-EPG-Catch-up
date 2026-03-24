@@ -743,16 +743,6 @@ local function replace_catchup_time_params(catchup_url, start_utc, end_utc)
     -- 3. APTV回看模板：${(b)yyyyMMddHHmmss:utc} 和 ${(e)yyyyMMddHHmmss:utc}
     catchup_url = catchup_url:gsub("%${%(b%)yyyyMMddHHmmss:utc%}", start_utc)
     catchup_url = catchup_url:gsub("%${%(e%)yyyyMMddHHmmss:utc%}", end_utc)
-
-    -- 4. 兜住已存在的查询参数（有些源是固定query，不是模板占位符）
-    local start_keys = {"starttime", "ztestarttime", "start", "from", "b"}
-    local end_keys = {"zteendtime", "utcend", "endtime", "end", "to", "e"}
-    for _, key in ipairs(start_keys) do
-        catchup_url = catchup_url:gsub("([?&]" .. key .. "=)%d%d%d%d%d%d%d%d%d%d%d%d%d%d", "%1" .. start_utc)
-    end
-    for _, key in ipairs(end_keys) do
-        catchup_url = catchup_url:gsub("([?&]" .. key .. "=)%d%d%d%d%d%d%d%d%d%d%d%d%d%d", "%1" .. end_utc)
-    end
     
     return catchup_url
 end
