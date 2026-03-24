@@ -41,7 +41,12 @@ portable_config/
 ├── 📄 input.conf             # 快捷键配置
 │
 ├── 📁 scripts/
-│   ├── 📄 epg.lua            # 【核心】IPTV EPG 脚本
+│   ├── � epg/               # 【核心】IPTV EPG 脚本（模块化）
+│   │   ├── 📄 main.lua       # 入口：全局状态 + mp.* 绑定
+│   │   ├── 📄 utils.lua      # 工具层：字符串/时间/搜索
+│   │   ├── 📄 data.lua       # 数据层：EPG/M3U/历史/频道
+│   │   ├── 📄 menu.lua       # 菜单层：4级菜单构建
+│   │   └── 📄 playback.lua   # 播放层：直播/回看/切台
 │   ├── 📄 thumbfast.lua      # 缩略图生成（第三方）
 │   │
 │   ├── 📁 bin/
@@ -75,13 +80,13 @@ portable_config/
 
 ## IPTV 核心脚本
 
-**`scripts/epg.lua`** 是主要业务逻辑，包含：
+**`scripts/epg/`** 是主要业务逻辑（模块化文件夹脚本），包含：
 
-- M3U/M3U8 文件解析
-- EPG XML 数据下载和解析（支持 gzip 压缩）
-- 四级菜单数据结构构建（分组 > 频道 > 日期桶 > EPG）
-- 回看 URL 生成（支持 OK影视、酷9、APTV 三种时间模板）
-- 频道历史记录管理
+- `main.lua`：全局状态初始化、所有 mp.* 事件/消息/按键绑定
+- `utils.lua`：字符串工具、UTF8、OSD、时间日期换算、拼音搜索
+- `data.lua`：M3U/M3U8 解析、EPG XML 下载与解析（支持 gzip）、频道历史记录、频道/节目查找
+- `menu.lua`：四级菜单数据结构构建（分组 > 频道 > 日期桶 > EPG）、EPG 回看搜索菜单
+- `playback.lua`：回看 URL 生成（支持 OK影视、酷9、APTV 三种时间模板）、直播播放、组内切台、HLS 兼容重试
 
 ## 核心功能
 
