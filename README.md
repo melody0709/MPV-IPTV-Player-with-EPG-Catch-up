@@ -8,6 +8,7 @@
 - **组内快速切台 (PgUp / PgDn / uosc 上一台下一台按钮)**：直播时可在当前频道组内切到上一台/下一台，行为与鼠标点选频道一致；切台后 OSD 会在视频顶部居中显示当前频道名；回看状态下不执行切台，只显示提示
 - **顶部频道上下文**：鼠标移动到视频顶部时，`uosc` 顶部悬浮标题除原有播放地址/标题外，还会在同一行后方显示当前频道组与频道名
 - **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
+- **回看续播预加载**：在当前回看片段接近结束时提前排队下一段 URL，尽量前置网络连接与请求延迟，减少续播卡顿
 - **EPG 回看搜索 (F9)**：跨频道搜索所有可回看的节目，按时间倒序排列
 - **手动强制刷新 EPG (Shift+F9)**：忽略缓存立即重新下载节目单
 - **智能右键**：根据上下文（IPTV/普通视频）显示不同的右键菜单
@@ -127,6 +128,8 @@ portable_config/
  epg_download_url=http://your-epg-source.com/epg.xml
  epg_cache_refresh_start=00:04
  epg_cache_refresh_interval_hours=7
+ catchup_preload_seconds=15
+ catchup_overlap_skip_seconds=0.5
 ```
 
 ## 运行日志调试
@@ -167,6 +170,14 @@ epg_download_url=http://your-epg-source.com/epg.xml
 epg_cache_refresh_start=00:04
 epg_cache_refresh_interval_hours=7
 
+# 回看续播预加载阈值（秒）
+# 当当前回看片段距离结束还剩这么多秒时，提前排队下一段 URL
+catchup_preload_seconds=15
+
+# 回看边界重叠补偿（秒）
+# 打开下一段时，从该片段开头向后偏移这么多秒开始播放，用于跳过边界重复
+catchup_overlap_skip_seconds=0.5
+
 # IPTV 菜单 UI 配置（0=沿用 uosc.conf）
 menu_subtitle_font_size=0
 menu_level1_min_width=0
@@ -180,6 +191,8 @@ menu_level4_min_width=0
 - `menu_level2_min_width`：二级菜单（频道）最小宽度
 - `menu_level3_min_width`：三级菜单（日期桶）最小宽度
 - `menu_level4_min_width`：四级菜单（EPG）最小宽度
+- `catchup_preload_seconds`：回看片段剩余多少秒时，提前把下一段插入播放列表；默认 `15`
+- `catchup_overlap_skip_seconds`：打开下一段时，从该片段开头向后偏移多少秒开始播放，用于跳过边界重复；默认 `0.5`
 
 ### EPG 缓存刷新规则
 

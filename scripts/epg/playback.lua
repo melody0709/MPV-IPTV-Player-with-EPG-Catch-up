@@ -8,6 +8,29 @@ local mp = require 'mp'
 
 -- ==================== URL 加载 ====================
 
+local function clone_load_options(file_options)
+    if not file_options then
+        return nil
+    end
+
+    local result = {}
+    for key, value in pairs(file_options) do
+        result[key] = value
+    end
+    return result
+end
+
+local function dispatch_loadfile(playback_url, load_mode, file_options)
+    local effective_mode = load_mode or "replace"
+
+    if file_options then
+        mp.command_native({"loadfile", playback_url, effective_mode, -1, file_options})
+        return
+    end
+
+    mp.commandv("loadfile", playback_url, effective_mode)
+end
+
 function should_force_hls_for_iptv_url(url)
     if not url or not url:match("^https?://") then
         return false
@@ -46,29 +69,35 @@ function should_force_hls_for_iptv_url(url)
     return true
 end
 
-function load_iptv_url(url, context, allow_hls_retry, force_hls)
+function load_iptv_url(url, context, allow_hls_retry, force_hls, load_mode, file_options)
     local playback_url = trim(url)
     if playback_url == "" then
         return false
     end
 
+    local effective_mode = load_mode or "replace"
+
     if force_hls then
         state.pending_hls_retry = nil
+        local hls_options = clone_load_options(file_options) or {}
+        hls_options["demuxer-lavf-format"] = "hls"
         mp.msg.info(string.format("IPTV HLS兼容: %s 默认打开失败，改用 HLS 重试 %s", context or "unknown", playback_url))
-        mp.commandv("loadfile", playback_url, "replace", "-1", "demuxer-lavf-format=hls")
+        dispatch_loadfile(playback_url, effective_mode, hls_options)
         return true
     end
 
     if allow_hls_retry ~= false and should_force_hls_for_iptv_url(playback_url) then
         state.pending_hls_retry = {
             url = playback_url,
-            context = context or "unknown"
+            context = context or "unknown",
+            load_mode = effective_mode,
+            file_options = clone_load_options(file_options)
         }
     else
         state.pending_hls_retry = nil
     end
 
-    mp.commandv("loadfile", playback_url)
+    dispatch_loadfile(playback_url, effective_mode, file_options)
     return true
 end
 
