@@ -13,7 +13,8 @@
 - **顶部频道上下文**：鼠标移动到视频顶部时，`uosc` 顶部悬浮标题除原有播放地址/标题外，还会在同一行后方显示当前频道组与频道名
 - **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
 - **EPG 回看搜索 (F9)**：跨频道搜索所有可回看的节目，按时间倒序排列
-- **手动强制刷新 EPG (Shift+F9)**：忽略缓存立即重新下载节目单
+- **远程 M3U 订阅模式**：支持 `m3u_download_url`，空载启动 mpv 时优先从缓存启动 IPTV，再在后台刷新远程订阅
+- **手动强制刷新 EPG (Shift+F9)**：普通模式下忽略缓存立即重新下载节目单；订阅模式下同时强制刷新 M3U 订阅与 EPG
 - **智能右键**：根据上下文（IPTV/普通视频）显示不同的右键菜单
 - **历史记录**：自动保存/恢复上次播放的频道；连续快速切台时会合并为 2 秒后的单次写盘，减少频繁 IO
 - **多平台支持**：Windows/Linux/macOS，自带 curl 工具链
@@ -59,7 +60,7 @@ portable_config/
 │       └── 📁 bin/           # ziggy 二进制文件
 │
 ├── 📁 script-opts/           # 脚本配置文件
-│   └── 📄 epg.conf           # EPG 配置（epg_download_url）
+│   └── 📄 epg.conf           # EPG / 远程 M3U 订阅配置
 │
 └── 📁 fonts/                 # 字体文件
 ```
@@ -90,6 +91,7 @@ portable_config/
 
 - 解析 M3U `group-title` 分组、频道
 - 自动加载 `x-tvg-url` EPG（xml/xml.gz）
+- 支持 `m3u_download_url` 远程订阅缓存启动与后台刷新
 - 支持 `catchup-source` 3 种回看模板
 - 支持 `epg_history.json` 记录最后播放频道（每个 m3u）
 
@@ -233,8 +235,8 @@ mp.commandv("script-message-to", "uosc", "select-menu-item", menu_type, index, p
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.7.4（2026-03-25）
-- **最后更新**：2026-03-25
+- **IPTV 版本**：V1.7.5（2026-03-26）
+- **最后更新**：2026-03-26
 
 ## 相关文档
 

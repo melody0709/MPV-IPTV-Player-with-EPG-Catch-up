@@ -1,5 +1,5 @@
 --[[
-                mpv + uosc 5.12 IPTV 脚本 V1.7.4
+                mpv + uosc 5.12 IPTV 脚本 V1.7.5
     重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
     模块化版本：main.lua 入口 + utils / data / playback / menu 子模块
 ]]
@@ -12,6 +12,7 @@ local opt = require 'mp.options'
 
 options = {
     epg_download_url = "",
+    m3u_download_url = "",
     epg_cache_refresh_start = "00:04",
     epg_cache_refresh_interval_hours = 7,
     catchup_preload_seconds = 15,
@@ -27,6 +28,7 @@ opt.read_options(options)
 
 state = {
     m3u_path = "",
+    m3u_source_key = "",
     epg_url = "",
     groups = {},
     group_names = {},
@@ -48,7 +50,14 @@ state = {
     queued_catchup_path = nil,
     next_catchup_queued = false,
     pending_hls_retry = nil,
-    last_iptv_menu_data = nil
+    last_iptv_menu_data = nil,
+    is_subscription_mode = false,
+    subscription_url = "",
+    subscription_cache_path = nil,
+    subscription_last_hash = nil,
+    subscription_refresh_in_progress = false,
+    subscription_bootstrap_started = false,
+    active_source_kind = "none"
 }
 
 -- ==================== 全局共享缓存 ====================
@@ -105,7 +114,8 @@ function sync_iptv_button_state()
     local is_catchup_channel = current_path and current_catchup_path
         and (current_path == current_catchup_path or current_path:find(current_catchup_path, 1, true))
     local is_local_m3u = normalized_path and state.m3u_path ~= "" and normalized_path == state.m3u_path
-    local is_iptv_active = is_live_channel or is_catchup_channel or is_local_m3u or false
+    local is_subscription_source = state.is_subscription_mode and state.is_loaded
+    local is_iptv_active = is_live_channel or is_catchup_channel or is_local_m3u or is_subscription_source or false
     local current_group_name = state.current_channel and state.current_channel.group or state.selected_group_name
     local current_channel_name = state.current_channel and state.current_channel.name or nil
 
@@ -241,6 +251,7 @@ mp.observe_property("path", "string", function(name, path)
             sync_iptv_button_state()
             return
         end
+        state.active_source_kind = "local"
         state.m3u_path = clean_path
         set_current_catchup_state(nil, nil)
         mp.osd_message("解析 M3U...", 2)
@@ -441,3 +452,23 @@ mp.msg.info("==========================")
 
 load_channel_history()
 sync_iptv_button_state()
+
+mp.add_timeout(0.2, function()
+    if state.subscription_bootstrap_started or state.is_loaded then
+        return
+    end
+
+    local subscription_url = trim(options.m3u_download_url)
+    if subscription_url == "" then
+        return
+    end
+
+    local current_path = mp.get_property("path")
+    if current_path and current_path ~= "" then
+        return
+    end
+
+    state.subscription_bootstrap_started = true
+    state.active_source_kind = "subscription"
+    bootstrap_subscription_m3u()
+end)

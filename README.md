@@ -10,7 +10,8 @@
 - **EPG 回看**：支持 XMLTV 格式节目单，时间跳转回看功能
 - **回看续播预加载**：在当前回看片段接近结束时提前排队下一段 URL，尽量前置网络连接与请求延迟，减少续播卡顿
 - **EPG 回看搜索 (F9)**：跨频道搜索所有可回看的节目，按时间倒序排列
-- **手动强制刷新 EPG (Shift+F9)**：忽略缓存立即重新下载节目单
+- **远程 M3U 订阅模式**：可配置远程 `m3u_download_url`，空载启动 mpv 时优先从本地缓存秒开 IPTV，再在后台刷新订阅
+- **手动强制刷新 EPG (Shift+F9)**：普通模式下强制刷新 EPG；订阅模式下同时强制刷新 M3U 订阅与 EPG
 - **智能右键**：根据上下文（IPTV/普通视频）显示不同的右键菜单
 - **历史记录**：自动保存/恢复上次播放的频道；连续快速切台时会合并为 2 秒后的单次写盘，减少频繁 IO
 - **多平台支持**：Windows/Linux/macOS，自带 curl 工具链
@@ -19,9 +20,13 @@
 
 1. 下载 mpv Windows 版（推荐 shinchiro mpv-winbuild）
 2. 把 `portable_config` 放到 下载好的mpv 根目录
-3. 双击 M3U，或命令行：
+3. 双击本地 M3U，或命令行：
    ```bash
    mpv tv.m3u
+   ```
+4. 如果想使用远程订阅，在 `script-opts/epg.conf` 中设置 `m3u_download_url` 后，直接空载启动：
+   ```bash
+   mpv
    ```
 
 ## 技术栈
@@ -65,7 +70,7 @@ portable_config/
 │       └── 📁 bin/           # ziggy 二进制文件
 │
 ├── 📁 script-opts/           # 脚本配置文件
-│   └── 📄 epg.conf           # EPG 配置（epg_download_url）
+│   └── 📄 epg.conf           # EPG / 远程 M3U 订阅配置
 │
 └── 📁 fonts/                 # 字体文件
 ```
@@ -94,6 +99,7 @@ portable_config/
 
 - 解析 M3U `group-title` 分组、频道
 - 自动加载 `x-tvg-url` EPG（xml/xml.gz）
+- 支持 `m3u_download_url` 远程订阅缓存启动与后台刷新
 - 支持 `catchup-source` 3 种回看模板
 - 支持 `epg_history.json` 记录最后播放频道（每个 m3u）
 
@@ -116,7 +122,8 @@ portable_config/
 
 - 文件位置：优先使用 `~~home/cache/epg_history.json`，无法确定时回退到 `%TEMP%/mpv_epg_epg_history.json`
 - 格式：`{ "path/to/tv.m3u": { "url":"...", "name":"...", "group":"...", "timestamp":123456789 } }`
-- 下次打开同一路径的 m3u 将自动还原上次频道
+- 远程订阅模式会使用 `sub:<m3u_download_url>` 作为稳定历史键，避免缓存文件刷新后丢失上次频道
+- 下次打开同一路径的 m3u，或再次进入同一个订阅源，将自动还原上次频道
 - 连续快速切台时，历史记录会在停止切台约 2 秒后统一写入最后一次频道
 - 如果在 2 秒内直接退出 mpv，脚本会在退出前立即刷盘，尽量避免最后频道丢失
 
@@ -126,6 +133,7 @@ portable_config/
 
 ```ini
  epg_download_url=http://your-epg-source.com/epg.xml
+ m3u_download_url=http://your-iptv-source.com/tv.m3u
  epg_cache_refresh_start=00:04
  epg_cache_refresh_interval_hours=7
  catchup_preload_seconds=15
@@ -148,7 +156,7 @@ portable_config/
 - 无历史记忆：确认脚本有写权限
 - 某些直播频道在 Android IPTV 能播、mpv 直接打开不行：当前脚本会在“先打开本地 M3U，再通过 IPTV 菜单/历史恢复播放频道”时，先按 mpv 默认方式打开；只有当 mpv 明确报错，且该地址看起来像无明确媒体后缀的 HTTP/HTTPS IPTV 源时，才自动再用 HLS 方式重试一次；这只作用于 IPTV 工作流，不会改动普通本地文件或普通网络文件的全局行为
 - 想在同一频道组内快速上下切台：直播时按 `PgUp` / `PgDn`，或点击 `uosc` 底部上一台/下一台按钮；如果正在看回看，只会提示“回看中不支持组内切台”
-- 想立即更新节目单：按 `Shift+F9`，或打开 `F8` IPTV 菜单后选择 `强制刷新 EPG`
+- 想立即更新节目单：按 `Shift+F9`，或打开 `F8` IPTV 菜单后选择 `强制刷新 EPG`；如果当前来源是订阅模式，会先刷新远程 M3U，再刷新 EPG
 - 想快速找频道：按 `F8` 后直接输入频道名，菜单会即时筛选频道结果，不会匹配 EPG 节目时间或标题；例如 `gd` 和 `guangdong` 都能匹配 `广东`，`dianying` 和 `dy` 都能匹配 `电影`，但不会因为 `jingdian` 里恰好含有 `gd` 就误命中 `经典` 类频道
 
 ## ⚙️ 配置说明
@@ -163,6 +171,10 @@ portable_config/
 # EPG 下载连接配置
 # 当此参数存在时，优先使用该连接下载 EPG，而不是 M3U 表头中的 x-tvg-url
 epg_download_url=http://your-epg-source.com/epg.xml
+
+# 远程 M3U 订阅地址（可选）
+# 配置后，空载启动 mpv 会优先尝试从缓存启动 IPTV，再在后台刷新远程订阅
+m3u_download_url=http://your-iptv-source.com/tv.m3u
 
 # EPG 缓存刷新时间配置
 # 从每天 00:04 开始，按 7 小时间隔生成当天刷新点：00:04 / 07:04 / 14:04 / 21:04
@@ -187,6 +199,7 @@ menu_level4_min_width=0
 - `menu_level3_min_width`：三级菜单（日期桶）最小宽度
 - `menu_level4_min_width`：四级菜单（EPG）最小宽度
 - `catchup_preload_seconds`：回看片段剩余多少秒时，提前把下一段插入播放列表；默认 `15`
+- `m3u_download_url`：远程 IPTV 订阅地址；配置后空载启动 `mpv` 会先尝试本地缓存，再按与 EPG 相同的缓存周期后台刷新
 
 ### EPG 缓存刷新规则
 
@@ -264,8 +277,8 @@ menu_level4_min_width=0
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.7.4（2026-03-25）
-- **最后更新**：2026-03-25
+- **IPTV 版本**：V1.7.5（2026-03-26）
+- **最后更新**：2026-03-26
 
 ## 🤝 致谢
 

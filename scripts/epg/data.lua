@@ -49,6 +49,37 @@ function get_epg_cache_path()
     return utils.join_path(cache_dir, "epg_" .. url_hash .. ".xml")
 end
 
+function get_subscription_m3u_key(url)
+    local normalized_url = trim(url or "")
+    if normalized_url == "" then
+        return ""
+    end
+    return "sub:" .. normalized_url
+end
+
+function get_subscription_m3u_cache_path(url)
+    local normalized_url = trim(url or "")
+    if normalized_url == "" then return nil end
+    local cache_dir = get_cache_dir()
+    if not cache_dir then return nil end
+    return utils.join_path(cache_dir, "m3u_" .. simple_hash(normalized_url) .. ".m3u")
+end
+
+local function save_cache_file(cache_path, data, label)
+    if not cache_path or not data then return false end
+
+    local file, err = io.open(cache_path, "wb")
+    if not file then
+        mp.msg.warn(string.format("无法保存%s: %s", label or "缓存文件", tostring(err)))
+        return false
+    end
+
+    file:write(data)
+    file:close()
+    mp.msg.info(string.format("%s已保存: %s (%d 字节)", label or "缓存文件", cache_path, #data))
+    return true
+end
+
 local function get_legacy_cycle_start()
     local now = os.time()
     local now_table = os.date("*t", now)
@@ -215,15 +246,7 @@ end
 
 -- 保存 EPG 数据到缓存
 function save_epg_cache(cache_path, data)
-    if not cache_path or not data then return end
-    local file, err = io.open(cache_path, "wb")
-    if file then
-        file:write(data)
-        file:close()
-        mp.msg.info("EPG 缓存已保存: " .. cache_path .. " (" .. #data .. " 字节)")
-    else
-        mp.msg.warn("无法保存 EPG 缓存: " .. tostring(err))
-    end
+    save_cache_file(cache_path, data, "EPG 缓存")
 end
 
 -- ==================== 历史记录 ====================
@@ -342,9 +365,15 @@ function flush_channel_history()
 end
 
 -- 获取 m3u 文件的唯一标识（使用文件路径的哈希）
+local function normalize_m3u_key(m3u_path)
+    return (m3u_path or ""):gsub("\\", "/"):gsub("^file://", "")
+end
+
 function get_m3u_key(m3u_path)
-    local normalized_path = m3u_path:gsub("\\", "/"):gsub("^file://", "")
-    return normalized_path
+    if state.m3u_path ~= "" and m3u_path == state.m3u_path and state.m3u_source_key ~= "" then
+        return state.m3u_source_key
+    end
+    return normalize_m3u_key(m3u_path)
 end
 
 -- 保存当前播放的频道到历史记录
@@ -449,6 +478,94 @@ function get_curl_path()
     return nil
 end
 
+function download_url_async(url, request_options, callback)
+    local normalized_url = trim(url or "")
+    if normalized_url == "" then
+        if callback then
+            callback(false, nil, nil, "empty-url")
+        end
+        return false
+    end
+
+    local opts = request_options or {}
+    local description = opts.description or "资源"
+    local use_compressed = opts.compressed ~= false
+    local is_windows = package.config:sub(1, 1) == '\\'
+
+    local curl_commands = {}
+    local local_curl = get_curl_path()
+    if local_curl then
+        table.insert(curl_commands, local_curl)
+    end
+    table.insert(curl_commands, "curl")
+
+    local function finish(success, data, backend, err)
+        if callback then
+            callback(success, data, backend, err)
+        end
+    end
+
+    local function try_powershell()
+        if not is_windows then
+            finish(false, nil, nil, "curl-failed")
+            return
+        end
+
+        local escaped_url = normalized_url:gsub("'", "''")
+        local ps_args = {
+            "powershell", "-NoProfile", "-Command",
+            "$url = '" .. escaped_url .. "'; $ProgressPreference = 'SilentlyContinue'; $wc = New-Object System.Net.WebClient; $bytes = $wc.DownloadData($url); [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"
+        }
+
+        mp.command_native_async({
+            name = "subprocess",
+            args = ps_args,
+            capture_stdout = true,
+            capture_stderr = true,
+            playback_only = false
+        }, function(ps_success, ps_res)
+            if ps_success and ps_res.status == 0 and ps_res.stdout and ps_res.stdout ~= "" then
+                finish(true, ps_res.stdout, "powershell")
+            else
+                mp.msg.error(string.format("%s 下载失败: PowerShell 兜底不可用", description))
+                finish(false, nil, "powershell", "powershell-failed")
+            end
+        end)
+    end
+
+    local function try_curl(index)
+        if index > #curl_commands then
+            try_powershell()
+            return
+        end
+
+        local curl_cmd = curl_commands[index]
+        local args = {curl_cmd, "-s", "-L"}
+        if use_compressed then
+            table.insert(args, "--compressed")
+        end
+        table.insert(args, normalized_url)
+
+        mp.msg.verbose(string.format("尝试下载%s: %s", description, curl_cmd))
+        mp.command_native_async({
+            name = "subprocess",
+            args = args,
+            capture_stdout = true,
+            capture_stderr = true,
+            playback_only = false
+        }, function(success, res)
+            if success and res.status == 0 and res.stdout and res.stdout ~= "" then
+                finish(true, res.stdout, curl_cmd)
+            else
+                try_curl(index + 1)
+            end
+        end)
+    end
+
+    try_curl(1)
+    return true
+end
+
 function decompress_gzip_if_needed(data)
     -- 检查是否为gzip格式（前两个字节为0x1F 0x8B）
     if #data < 2 then return data end
@@ -534,10 +651,29 @@ function read_file_safe(path)
         return content
     end
     local is_windows = package.config:sub(1,1) == '\\'
-    local args = is_windows and {"cmd", "/c", "type", path:gsub("/", "\\")} or {"cat", path}
+    local normalized_path = is_windows and path:gsub("/", "\\") or path
+    local args = is_windows and {"cmd", "/c", "type", normalized_path} or {"cat", normalized_path}
     local res = mp.command_native({ name = "subprocess", args = args, capture_stdout = true })
-    if res.status == 0 and res.stdout then return res.stdout end
+    if res and res.status == 0 and res.stdout then return res.stdout end
     return nil
+end
+
+local function apply_parsed_channel_selection(channel)
+    if not channel or not channel.url then
+        return false
+    end
+
+    local matched_group_name, matched_channel_index = find_channel_position_by_url(channel.url)
+    if matched_group_name and matched_channel_index then
+        local resolved_channel = set_selected_channel_position(matched_group_name, matched_channel_index) or channel
+        set_current_channel_state(resolved_channel)
+        return true
+    end
+
+    state.selected_group_name = nil
+    state.selected_channel_index = nil
+    set_current_channel_state(channel)
+    return true
 end
 
 function fetch_and_parse_epg_async(force_refresh)
@@ -563,71 +699,198 @@ function fetch_and_parse_epg_async(force_refresh)
         mp.osd_message("正在强制刷新 EPG 数据...", 3)
     end
 
-    mp.msg.info("尝试使用 curl 下载 EPG")
+    mp.msg.info("尝试下载 EPG 数据")
+    download_url_async(state.epg_url, {
+        description = "EPG",
+        compressed = true,
+    }, function(success, data)
+        if success and data then
+            if cache_path then
+                save_epg_cache(cache_path, data)
+            end
+            parse_epg_string(decompress_gzip_if_needed(data))
+            mp.msg.info("EPG 下载成功")
+        else
+            mp.osd_message("EPG 下载失败", 5)
+        end
+    end)
+end
 
-    -- 构建可能的curl命令列表：先本地，后系统
-    local curl_commands = {}
-    local local_curl = get_curl_path()
-    if local_curl then
-        table.insert(curl_commands, local_curl)
-        mp.msg.info("使用 curl.exe 下载 EPG")
-    else
-        mp.msg.info("本地 curl 不存在，将使用系统 curl")
+function refresh_subscription_m3u_async(force_refresh, callback)
+    local subscription_url = trim(options.m3u_download_url)
+    if subscription_url == "" then
+        if callback then
+            callback(false, {reason = "not-configured"})
+        end
+        return false
     end
-    table.insert(curl_commands, "curl")  -- 系统curl
 
-    local function try_next(index)
-        if index > #curl_commands then
-            mp.msg.error("所有 curl 尝试失败，尝试 PowerShell")
-            local ps_args = {
-                "powershell", "-NoProfile", "-Command",
-                "$url = '" .. state.epg_url .. "'; $wc = New-Object System.Net.WebClient; $bytes = $wc.DownloadData($url); [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)"
-            }
-            mp.command_native_async({
-                name = "subprocess",
-                args = ps_args,
-                capture_stdout = true,
-                capture_stderr = true,
-                playback_only = false
-            }, function(ps_success, ps_res)
-                if ps_success and ps_res.status == 0 and ps_res.stdout then
-                    if cache_path then
-                        save_epg_cache(cache_path, ps_res.stdout)
-                    end
-                    parse_epg_string(decompress_gzip_if_needed(ps_res.stdout))
-                else
-                    mp.osd_message("EPG 下载失败", 5)
-                end
-            end)
+    if state.subscription_refresh_in_progress then
+        if callback then
+            callback(false, {reason = "busy"})
+        end
+        return false
+    end
+
+    local source_key = get_subscription_m3u_key(subscription_url)
+    local cache_path = get_subscription_m3u_cache_path(subscription_url)
+    if not cache_path then
+        if callback then
+            callback(false, {reason = "cache-unavailable"})
+        end
+        return false
+    end
+
+    local previous_cache = cache_path and read_file_safe(cache_path) or nil
+    local previous_hash = previous_cache and simple_hash(previous_cache) or state.subscription_last_hash
+
+    state.subscription_refresh_in_progress = true
+    mp.msg.info(force_refresh and "开始强制刷新 IPTV 订阅" or "开始刷新 IPTV 订阅")
+
+    download_url_async(subscription_url, {
+        description = "M3U订阅",
+        compressed = false,
+    }, function(success, data)
+        state.subscription_refresh_in_progress = false
+
+        if not success or not data or trim(data) == "" then
+            mp.msg.error("M3U 订阅下载失败")
+            if callback then
+                callback(false, {reason = "download-failed"})
+            end
             return
         end
 
-        local curl_cmd = curl_commands[index]
-        mp.msg.verbose("尝试 curl: " .. curl_cmd)
-        mp.command_native_async({
-            name = "subprocess",
-            args = {curl_cmd, "-s", "--compressed", "-L", state.epg_url},
-            capture_stdout = true,
-            capture_stderr = true,
-            playback_only = false
-        }, function(success, res, err)
-            if success and res.status == 0 and res.stdout and res.stdout ~= "" then
-                if cache_path then
-                    save_epg_cache(cache_path, res.stdout)
+        local new_hash = simple_hash(data)
+        local changed = new_hash ~= previous_hash
+
+        if changed or not previous_cache then
+            if not save_cache_file(cache_path, data, "M3U 订阅缓存") then
+                if callback then
+                    callback(false, {reason = "cache-save-failed", cache_path = cache_path})
                 end
-                parse_epg_string(decompress_gzip_if_needed(res.stdout))
-                mp.msg.info("curl 下载 EPG 成功")
-            else
-                try_next(index + 1)
+                return
             end
-        end)
+        else
+            mp.msg.info("M3U 订阅内容未变化，跳过重新解析")
+        end
+
+        state.subscription_url = subscription_url
+        state.subscription_cache_path = cache_path
+        state.subscription_last_hash = new_hash
+
+        local should_apply_to_player = state.active_source_kind ~= "local"
+            and (not state.is_loaded or state.m3u_source_key == "" or state.m3u_source_key == source_key)
+
+        if not should_apply_to_player then
+            if callback then
+                callback(true, {changed = changed, applied = false, cache_path = cache_path})
+            end
+            return
+        end
+
+        if changed or not state.is_loaded or state.m3u_source_key ~= source_key then
+            local was_loaded = state.is_loaded and state.m3u_source_key == source_key
+            state.active_source_kind = "subscription"
+            local parse_ok = parse_m3u(cache_path, {
+                is_subscription = true,
+                source_key = source_key,
+                cache_path = cache_path,
+                subscription_url = subscription_url,
+                content_hash = new_hash,
+                history_autoplay = not was_loaded,
+                preserve_current_channel = was_loaded,
+                force_epg_refresh = force_refresh,
+            })
+            if not parse_ok then
+                if callback then
+                    callback(false, {reason = "parse-failed", cache_path = cache_path})
+                end
+                return
+            end
+        elseif force_refresh then
+            fetch_and_parse_epg_async(true)
+        end
+
+        if callback then
+            callback(true, {changed = changed, applied = true, cache_path = cache_path})
+        end
+    end)
+
+    return true
+end
+
+function bootstrap_subscription_m3u()
+    local subscription_url = trim(options.m3u_download_url)
+    if subscription_url == "" then
+        return false
     end
 
-    try_next(1)
+    local source_key = get_subscription_m3u_key(subscription_url)
+    local cache_path = get_subscription_m3u_cache_path(subscription_url)
+    if not cache_path then
+        mp.msg.error("无法确定 IPTV 订阅缓存路径")
+        return false
+    end
+
+    local cached_data = cache_path and read_file_safe(cache_path) or nil
+    local cache_loaded = false
+    local cache_valid = cached_data and is_cache_valid(cache_path) or false
+
+    if cached_data and cache_path then
+        state.active_source_kind = "subscription"
+        mp.msg.info("检测到 IPTV 订阅缓存，优先从缓存启动")
+        mp.osd_message("正在从缓存启动 IPTV 订阅...", 2)
+        cache_loaded = parse_m3u(cache_path, {
+            is_subscription = true,
+            source_key = source_key,
+            cache_path = cache_path,
+            subscription_url = subscription_url,
+            content_hash = simple_hash(cached_data),
+            skip_epg_refresh = not cache_valid,
+        })
+        if cache_loaded then
+            mp.osd_message("IPTV 订阅已从缓存启动", 2)
+        end
+    end
+
+    if cache_valid then
+        mp.msg.info("IPTV 订阅缓存仍在有效期内，跳过后台刷新")
+        return cache_loaded
+    end
+
+    if cache_loaded then
+        mp.msg.info("IPTV 订阅缓存已启动，后台刷新远程 M3U")
+    else
+        mp.osd_message("正在更新 IPTV 订阅...", 3)
+    end
+
+    refresh_subscription_m3u_async(false, function(success)
+        if not success and cache_loaded then
+            fetch_and_parse_epg_async(false)
+        elseif not success then
+            mp.osd_message("IPTV 订阅下载失败", 5)
+        end
+    end)
+
+    return cache_loaded
 end
 
 -- 强制刷新 EPG（忽略缓存）
 function force_refresh_epg()
+    local subscription_url = trim(options.m3u_download_url)
+    local subscription_key = get_subscription_m3u_key(subscription_url)
+    if subscription_url ~= "" and state.is_subscription_mode and state.m3u_source_key == subscription_key then
+        mp.msg.info("手动强制刷新 IPTV 订阅与 EPG 数据")
+        mp.osd_message("正在强制刷新 IPTV 订阅...", 3)
+        refresh_subscription_m3u_async(true, function(success)
+            if not success then
+                fetch_and_parse_epg_async(true)
+            end
+        end)
+        return
+    end
+
     if state.epg_url == "" then
         mp.osd_message("未配置 EPG 下载地址", 3)
         return
@@ -638,17 +901,32 @@ end
 
 -- ==================== M3U 解析 ====================
 
-function parse_m3u(path)
+function parse_m3u(path, parse_options)
+    parse_options = parse_options or {}
     local content = read_file_safe(path)
     if not content then return false end
+
+    local preserve_current_channel = parse_options.preserve_current_channel == true
+    local previous_channel = preserve_current_channel and state.current_channel or nil
+
+    state.m3u_path = path
+    state.m3u_source_key = parse_options.source_key or normalize_m3u_key(path)
+    state.is_subscription_mode = parse_options.is_subscription == true
+    state.subscription_url = state.is_subscription_mode and (parse_options.subscription_url or trim(options.m3u_download_url)) or ""
+    state.subscription_cache_path = state.is_subscription_mode and (parse_options.cache_path or path) or nil
+    state.subscription_last_hash = parse_options.content_hash or (state.is_subscription_mode and simple_hash(content) or nil)
+    state.active_source_kind = state.is_subscription_mode and "subscription" or "local"
+
     state.groups = {}
     state.group_names = {}
     state.channel_bucket_cache = {}
     channel_search_cache = {}
     state.selected_group_name = nil
     state.selected_channel_index = nil
-    set_current_channel_state(nil)
-    set_current_catchup_state(nil, nil)
+    if not preserve_current_channel then
+        set_current_channel_state(nil)
+        set_current_catchup_state(nil, nil)
+    end
     state.epg_url = trim(options.epg_download_url)
     if state.epg_url ~= "" then
         mp.msg.info("使用配置的 EPG 下载连接: " .. state.epg_url)
@@ -686,26 +964,34 @@ function parse_m3u(path)
     end
     state.is_loaded = true
 
-    -- 先恢复历史频道，再延后启动 EPG 处理，避免本地 M3U 首项先播出来。
-    local last_channel = load_last_channel_from_history()
-    if last_channel and last_channel.url then
-        mp.msg.info("自动播放上次频道: " .. (last_channel.name or "未知"))
-        state.auto_playing = true  -- 标记正在自动播放
-        local last_group_name, last_channel_index = find_channel_position_by_url(last_channel.url)
-        local resolved_channel = set_selected_channel_position(last_group_name, last_channel_index) or last_channel
-        -- 先设置 current_channel，这样菜单能正确识别当前频道
-        set_current_channel_state(resolved_channel)
-        load_iptv_url(last_channel.url, "history-resume")
-        -- 播放命令发送后，延迟清除标记（给路径变化监听器足够时间）
-        mp.add_timeout(1.5, function()
-            state.auto_playing = false
-            mp.msg.info("自动播放标记已清除")
-        end)
+    if preserve_current_channel and previous_channel and apply_parsed_channel_selection(previous_channel) then
+        mp.msg.info("订阅刷新后已保持当前频道状态")
+    else
+        local should_restore_history = parse_options.history_autoplay ~= false
+        if should_restore_history then
+            local last_channel = load_last_channel_from_history()
+            if last_channel and last_channel.url then
+                mp.msg.info("自动播放上次频道: " .. (last_channel.name or "未知"))
+                state.auto_playing = true  -- 标记正在自动播放
+                local last_group_name, last_channel_index = find_channel_position_by_url(last_channel.url)
+                local resolved_channel = set_selected_channel_position(last_group_name, last_channel_index) or last_channel
+                -- 先设置 current_channel，这样菜单能正确识别当前频道
+                set_current_channel_state(resolved_channel)
+                load_iptv_url(last_channel.url, "history-resume")
+                -- 播放命令发送后，延迟清除标记（给路径变化监听器足够时间）
+                mp.add_timeout(1.5, function()
+                    state.auto_playing = false
+                    mp.msg.info("自动播放标记已清除")
+                end)
+            end
+        end
     end
 
-    mp.add_timeout(0, function()
-        fetch_and_parse_epg_async()
-    end)
+    if not parse_options.skip_epg_refresh then
+        mp.add_timeout(0, function()
+            fetch_and_parse_epg_async(parse_options.force_epg_refresh == true)
+        end)
+    end
 
     return true
 end
