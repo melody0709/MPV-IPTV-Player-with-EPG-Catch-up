@@ -114,9 +114,6 @@ build_channel_epg_items = function(ch, programs)
     local epg_items = {}
     local epg_list = programs or state.epg_data[ch.tvg_id]
 
-    -- 分隔线
-    table.insert(epg_items, {title = "节目单", selectable = false, muted = true, italic = true})
-
     if epg_list and #epg_list > 0 then
         -- 回看资格判定延迟 2 分钟，兼容节目整点刚开始时的回看源稳定性
         local catchup_ready_utc = catchup_ready_utc_string()
@@ -274,13 +271,6 @@ local function build_iptv_root_items()
     for _, utility_item in ipairs(utility_items) do
         table.insert(items, utility_item)
     end
-
-    table.insert(items, {
-        title = "频道分组",
-        selectable = false,
-        muted = true,
-        italic = true
-    })
 
     return items
 end
