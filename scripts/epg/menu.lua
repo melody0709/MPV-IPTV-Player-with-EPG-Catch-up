@@ -566,21 +566,30 @@ end
 
 -- ==================== EPG 回看搜索菜单 (F9) ====================
 
-local CATCHUP_MENU_LIMIT = 100
+-- 构建回看 EPG 搜索菜单（显示所有可回看的节目，按时间倒序排列）
+function build_catchup_epg_menu()
+    if not state.is_loaded then
+        mp.osd_message("请先播放 M3U 文件！", 3)
+        return nil
+    end
 
-local function collect_all_catchup_items()
-    local temp_items = {}
+    local temp_items = {}  -- 临时存储，包含排序键
+    -- EPG 搜索菜单与三级菜单保持一致：节目开始 2 分钟后才显示为可回看
     local catchup_ready_utc = catchup_ready_utc_string()
 
-    for _, group_name in ipairs(state.group_names) do
-        local channels = state.groups[group_name]
+    -- 遍历所有频道组
+    for group_name, channels in pairs(state.groups) do
         for _, ch in ipairs(channels) do
+            -- 检查频道是否有回看功能
             local has_catchup = ch.catchup ~= "" and ch.catchup:find("%$%{")
             if has_catchup then
                 local epg_list = state.epg_data[ch.tvg_id]
                 if epg_list then
                     for _, prog in ipairs(epg_list) do
+                        -- 只显示开始时间早于当前时间 2 分钟的节目（可以回看）
                         if prog.start_utc <= catchup_ready_utc then
+                            local catchup_url = ch.catchup
+                            -- 不在此处生成完整 URL，延迟到点击时生成
                             local display_text = string.format("%s | %s | %s",
                                 ch.name, prog.display_start, prog.title)
 
@@ -588,7 +597,7 @@ local function collect_all_catchup_items()
                                 start_utc = prog.start_utc,
                                 menu_item = {
                                     title = display_text,
-                                    search_key = ch.name .. " " .. prog.title,
+                                    search_key = prog.title,  -- 只用于搜索的EPG标题
                                     value = {"script-message-to", "epg", "play-catchup",
                                         "", ch.catchup, prog.start_utc, prog.end_utc, ch.url},
                                     hint = "回看",
@@ -602,29 +611,18 @@ local function collect_all_catchup_items()
         end
     end
 
+    -- 按开始时间倒序排列（最新的在前）
     table.sort(temp_items, function(a, b)
         return a.start_utc > b.start_utc
     end)
 
-    return temp_items
-end
-
-function build_catchup_epg_menu()
-    if not state.is_loaded then
-        mp.osd_message("请先播放 M3U 文件！", 3)
-        return nil
-    end
-
-    local temp_items = collect_all_catchup_items()
-    local total_count = #temp_items
-
     local items = {}
-    local limit = math.min(total_count, CATCHUP_MENU_LIMIT)
-    for i = 1, limit do
-        table.insert(items, temp_items[i].menu_item)
+    for _, temp in ipairs(temp_items) do
+        table.insert(items, temp.menu_item)
     end
 
-    if #items == 0 then
+    local count = #items
+    if count == 0 then
         table.insert(items, {
             title = "无可回看的节目",
             selectable = false,
@@ -635,68 +633,23 @@ function build_catchup_epg_menu()
 
     local menu_data = {
         type = "epg_search",
-        title = "EPG 回看搜索 (" .. total_count .. " 个节目)",
+        title = "EPG 回看搜索 (" .. count .. " 个节目)",
         items = items,
         anchor_x = "left",
         anchor_offset = 20,
-        search = "",
-        search_style = "palette",
-        on_search = {"script-message-to", "epg", "catchup-search"}
+        search = "",              -- 立即激活搜索框
+        search_style = "palette", -- 立即显示搜索框（palette模式）
+        search_submenus = true     -- 启用搜索功能
     }
 
     return menu_data
-end
-
-function handle_catchup_search(query)
-    local normalized_query = trim(query or ""):lower()
-
-    if normalized_query == "" then
-        local menu_data = build_catchup_epg_menu()
-        if menu_data then
-            mp.commandv("script-message-to", "uosc", "update-menu", utils.format_json(menu_data))
-        end
-        return
-    end
-
-    local temp_items = collect_all_catchup_items()
-    local items = {}
-    for _, temp in ipairs(temp_items) do
-        local search_key = temp.menu_item.search_key or ""
-        if search_key:lower():find(normalized_query, 1, true) then
-            table.insert(items, temp.menu_item)
-            if #items >= CATCHUP_MENU_LIMIT then
-                break
-            end
-        end
-    end
-
-    if #items == 0 then
-        table.insert(items, {
-            title = "未找到匹配的节目",
-            selectable = false,
-            muted = true,
-            italic = true
-        })
-    end
-
-    local menu_data = {
-        type = "epg_search",
-        title = "EPG 回看搜索 (" .. #items .. " 个结果)",
-        items = items,
-        anchor_x = "left",
-        anchor_offset = 20,
-        search = query,
-        search_style = "palette",
-        on_search = {"script-message-to", "epg", "catchup-search"}
-    }
-
-    mp.commandv("script-message-to", "uosc", "update-menu", utils.format_json(menu_data))
 end
 
 function show_epg_search_menu()
     local menu_data = build_catchup_epg_menu()
     if not menu_data then return end
 
+    -- 强制启用输入法，解决中文输入法第一个字符输入英文的问题
     mp.set_property_bool("input-ime", true)
 
     mp.commandv("script-message-to", "uosc", "open-menu", utils.format_json(menu_data))

@@ -247,10 +247,6 @@ mp.register_script_message("iptv-channel-search", function(query)
     handle_iptv_channel_search(query)
 end)
 
-mp.register_script_message("catchup-search", function(query)
-    handle_catchup_search(query)
-end)
-
 mp.register_script_message("channel-group-prev", function()
     switch_channel_in_current_group(-1)
 end)
