@@ -98,7 +98,7 @@ function load_iptv_url(url, context, allow_hls_retry, force_hls, load_mode, file
         local hls_options = clone_load_options(file_options) or {}
         hls_options["demuxer-lavf-format"] = "hls"
         if state.known_hls_urls and state.known_hls_urls[playback_url] then
-            mp.msg.info(string.format("IPTV HLS加速: %s %s", context or "unknown", playback_url))
+            -- mp.msg.info(string.format("IPTV HLS加速: %s %s", context or "unknown", playback_url))
         else
             mp.msg.info(string.format("IPTV HLS兼容: %s 默认打开失败，改用 HLS 重试 %s", context or "unknown", playback_url))
         end

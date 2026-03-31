@@ -260,7 +260,7 @@ function get_history_file_path()
     if success and expanded_path and expanded_path ~= "" and expanded_path ~= "~~home/cache/" then
         local cache_dir = expanded_path:gsub("[\\/]+$", "")
         local history_path = utils.join_path(cache_dir, state.history_file)
-        mp.msg.info("历史记录路径: " .. history_path)
+        -- mp.msg.info("历史记录路径: " .. history_path)
         return history_path
     end
 
@@ -314,7 +314,7 @@ end
 -- 保存频道历史记录
 function save_channel_history()
     local history_path = get_history_file_path()
-    mp.msg.info("尝试保存历史记录到: " .. history_path)
+    -- mp.msg.info("尝试保存历史记录到: " .. history_path)
 
     local file, err = io.open(history_path, "w")
     if file then
@@ -345,7 +345,7 @@ function schedule_channel_history_save(channel_name)
     end)
 
     if channel_name and channel_name ~= "" then
-        mp.msg.info(string.format("频道历史记录已加入延迟保存队列(%.1f秒): %s", HISTORY_SAVE_DELAY, channel_name))
+        -- mp.msg.info(string.format("频道历史记录已加入延迟保存队列(%.1f秒): %s", HISTORY_SAVE_DELAY, channel_name))
     else
         mp.msg.info(string.format("频道历史记录已加入延迟保存队列(%.1f秒)", HISTORY_SAVE_DELAY))
     end
