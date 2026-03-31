@@ -79,6 +79,11 @@ function load_iptv_url(url, context, allow_hls_retry, force_hls, load_mode, file
         return false
     end
 
+    if state.last_played_url ~= playback_url then
+        state.error_retry_count = 0
+        state.last_played_url = playback_url
+    end
+
     local effective_mode = load_mode or "replace"
 
     cancel_pending_hls_retry_timer()

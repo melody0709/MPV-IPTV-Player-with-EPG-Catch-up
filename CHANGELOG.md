@@ -1,4 +1,10 @@
 # Changelog
+## V1.7.8 - 2026-03-31
+
+- 新增通用网络断线自动重试机制：播放失败时自动重试最多 3 次（每次间隔 1.5 秒），无需手动反复点击，彻底解决 `.php` 动态代理接口因上游响应慢或限流导致的 `Failed to open` 问题
+- 新增 `file-loaded` 事件中的当前 URL 探测日志，便于调试流媒体连接状态
+- 同步更新 `README.md`、`INSTRUCTIONS.md` 与脚本版本号为 V1.7.8
+
 ## V1.7.7 - 2026-03-31
 
 - 修复 `find_channel_by_url` 冗余遍历：删除 `pairs(state.groups)` 兜底循环，`group_names` 与 `state.groups` 在 `parse_m3u` 中同步维护，无需二次遍历。

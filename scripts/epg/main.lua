@@ -1,6 +1,5 @@
 --[[
-                mpv + uosc 5.12 IPTV 脚本 V1.7.7
-    重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
+                重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
     模块化版本：main.lua 入口 + utils / data / playback / menu 子模块
 ]]
 
@@ -36,6 +35,8 @@ state = {
     channel_bucket_cache = {},
     url_to_channel_map = {},  -- ★ 新增：防止直接播放URL时报 nil 错误
     known_hls_urls = {},      -- ★ 新增：初始化 HLS 缓存字典
+    error_retry_count = 0,    -- ★ 新增：记录当前报错重试了多少次
+    last_played_url = nil,    -- ★ 新增：记录最后一次尝试播放的URL
     is_loaded = false,
     current_channel = nil,
     history_file = "epg_history.json",
@@ -54,7 +55,6 @@ state = {
     current_time_pos = 0,
     pending_hls_retry = nil,
     pending_hls_retry_timer = nil,
-    known_hls_urls = {},
     last_iptv_menu_data = nil,
     is_subscription_mode = false,
     subscription_url = "",
@@ -450,6 +450,11 @@ mp.register_event("file-loaded", function()
     cancel_pending_hls_retry_timer()
     state.pending_hls_retry = nil
     try_activate_queued_catchup_state()
+
+    if state.last_played_url and state.last_played_url:match("^https?://") then
+        local stream_path = mp.get_property("stream-open-filename") or ""
+        mp.msg.info(string.format("[当前URL] %s", stream_path))
+    end
 end)
 
 mp.register_event("shutdown", function()
@@ -484,6 +489,27 @@ mp.register_event("end-file", function(event)
             load_iptv_url(retry.url, retry.context, false, true, retry.load_mode, retry.file_options)
         end)
         return
+    end
+
+    if event.reason == "error" then
+        if state.last_played_url and state.last_played_url ~= "" then
+            local max_retries = 3
+            if state.error_retry_count < max_retries then
+                state.error_retry_count = state.error_retry_count + 1
+                mp.msg.warn(string.format("播放失败，准备发起第 %d 次自动重试: %s", state.error_retry_count, state.last_played_url))
+                mp.osd_message(string.format("连接失败，正在自动重试 (%d/%d)...", state.error_retry_count, max_retries), 2)
+                mp.add_timeout(1.5, function()
+                    local current_path = mp.get_property("path")
+                    if current_path == nil or current_path == state.last_played_url then
+                        mp.commandv("loadfile", state.last_played_url, "replace")
+                    end
+                end)
+                return
+            else
+                mp.osd_message("播放失败：服务器无响应或链接已失效", 4)
+                state.error_retry_count = 0
+            end
+        end
     end
 
     if event.reason ~= "eof" then
