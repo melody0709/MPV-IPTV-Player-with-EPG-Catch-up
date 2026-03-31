@@ -1,4 +1,13 @@
 # Changelog
+## V1.7.7 - 2026-03-31
+
+- 修复 `find_channel_by_url` 冗余遍历：删除 `pairs(state.groups)` 兜底循环，`group_names` 与 `state.groups` 在 `parse_m3u` 中同步维护，无需二次遍历。
+- 修复 `path:find` 误匹配（致命）：新增 `url_matches()` 函数，替换 5 处 `path:find(url, 1, true)`；只有当 URL 完全相等或其后紧跟 `?`/`#`/`/` 参数分隔符时才判定匹配，彻底解决 CCTV-11 被误认为 CCTV-1 的切台错位、历史记录存错、EPG 加载错乱问题。
+- 性能优化：`path` 监听器从 O(N×M) 双层循环升级为 O(1) 字典查找；`parse_m3u` 解析时建立 `state.url_to_channel_map`（自动剥离 `?token=` 动态参数），HLS 切片切换不再卡顿。
+- 性能优化：EPG 回看搜索菜单（F9）从全量渲染改为截断 100 条 + `on_search` 回调；Lua 内存搜索返回前 100 条，空查询自动恢复默认，菜单从卡顿数秒变为秒开。
+- 性能优化：EPG 日期桶从相对 key 缓存升级为绝对日期预分桶（`state.epg_buckets[channel_id]["YYYY-MM-DD"]`）；解析时物理分桶，读取时 O(1) 按日期字符串提取，跨天零成本自动生效，无需定时器、无需缓存失效判断。
+- 同步更新 `README.md`、`INSTRUCTIONS.md` 与脚本版本号为 V1.7.7。
+
 ## V1.7.6 - 2026-03-31
 
 - 修复：避免在回看或菜单构建时因慢源/死链导致右键或 F8 菜单卡死 —— 将菜单中对播放进度的同步查询改为通过 `time-pos` 观察器缓存读取（`mp.get_property_number("time-pos")` 改为 `state.current_time_pos`）。

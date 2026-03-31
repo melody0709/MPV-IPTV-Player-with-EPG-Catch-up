@@ -1,5 +1,5 @@
 --[[
-                mpv + uosc 5.12 IPTV 脚本 V1.7.5
+                mpv + uosc 5.12 IPTV 脚本 V1.7.7
     重构：四级滑动菜单结构 - 分组 > 频道 > 日期桶 > EPG
     模块化版本：main.lua 入口 + utils / data / playback / menu 子模块
 ]]
@@ -114,10 +114,10 @@ function sync_iptv_button_state()
 
     local current_channel_url = state.current_channel and state.current_channel.url or nil
     local is_live_channel = current_path and current_channel_url
-        and (current_path == current_channel_url or current_path:find(current_channel_url, 1, true))
+        and (current_path == current_channel_url or url_matches(current_path, current_channel_url))
     local current_catchup_path = state.current_catchup_path
     local is_catchup_channel = current_path and current_catchup_path
-        and (current_path == current_catchup_path or current_path:find(current_catchup_path, 1, true))
+        and (current_path == current_catchup_path or url_matches(current_path, current_catchup_path))
     local is_local_m3u = normalized_path and state.m3u_path ~= "" and normalized_path == state.m3u_path
     local is_subscription_source = state.is_subscription_mode and state.is_loaded
     local is_iptv_active = is_live_channel or is_catchup_channel or is_local_m3u or is_subscription_source or false
@@ -247,6 +247,10 @@ mp.register_script_message("iptv-channel-search", function(query)
     handle_iptv_channel_search(query)
 end)
 
+mp.register_script_message("catchup-search", function(query)
+    handle_catchup_search(query)
+end)
+
 mp.register_script_message("channel-group-prev", function()
     switch_channel_in_current_group(-1)
 end)
@@ -337,15 +341,45 @@ mp.observe_property("path", "string", function(name, path)
         return
     end
 
+    local path_base = path:match("^([^?]+)") or path
+    local map_entry = state.url_to_channel_map[path_base]
+
+    if map_entry then
+        local ch = map_entry.channel
+        local matched_group_name = map_entry.group_name
+        local matched_channel_index = map_entry.channel_index
+        local selected_channel = get_channel_by_position(state.selected_group_name, state.selected_channel_index)
+        if selected_channel and selected_channel.url ~= ch.url then
+            sync_iptv_button_state()
+            return
+        end
+
+        set_current_catchup_state(nil, nil)
+        if selected_channel and selected_channel.url == ch.url then
+            matched_group_name = state.selected_group_name
+            matched_channel_index = state.selected_channel_index
+            ch = selected_channel
+        end
+        set_selected_channel_position(matched_group_name, matched_channel_index)
+        if not state.current_channel or state.current_channel.url ~= ch.url then
+            set_current_channel_state(ch)
+            mp.msg.info("当前频道: " .. ch.name)
+            if not state.auto_playing then
+                save_current_channel_to_history()
+            end
+        end
+        sync_iptv_button_state()
+        return
+    end
+
     for group_name, channels in pairs(state.groups) do
         for _, ch in ipairs(channels) do
-            if ch.url == path or (path and path:find(ch.url, 1, true)) then
+            if ch.url == path or (path and url_matches(path, ch.url)) then
                 local selected_channel = get_channel_by_position(state.selected_group_name, state.selected_channel_index)
                 if selected_channel and selected_channel.url ~= ch.url then
                     return
                 end
 
-                -- 命中直播URL：清空回看上下文
                 set_current_catchup_state(nil, nil)
                 local matched_group_name, matched_channel_index = find_channel_position_by_url(ch.url)
                 if selected_channel and selected_channel.url == ch.url then
@@ -354,11 +388,9 @@ mp.observe_property("path", "string", function(name, path)
                     ch = selected_channel
                 end
                 set_selected_channel_position(matched_group_name, matched_channel_index)
-                -- 只有当频道真正改变时才更新
                 if not state.current_channel or state.current_channel.url ~= ch.url then
                     set_current_channel_state(ch)
                     mp.msg.info("当前频道: " .. ch.name)
-                    -- 自动播放时跳过保存历史记录
                     if not state.auto_playing then
                         save_current_channel_to_history()
                     end
@@ -403,7 +435,7 @@ local function try_activate_queued_catchup_state()
         return false
     end
 
-    if current_path ~= state.queued_catchup_path and not current_path:find(state.queued_catchup_path, 1, true) then
+    if current_path ~= state.queued_catchup_path and not url_matches(current_path, state.queued_catchup_path) then
         return false
     end
 
@@ -435,7 +467,7 @@ mp.register_event("end-file", function(event)
             state.pending_hls_retry_timer = nil
 
             local current_path = mp.get_property("path")
-            if current_path and current_path ~= retry.url and not current_path:find(retry.url, 1, true) then
+            if current_path and current_path ~= retry.url and not url_matches(current_path, retry.url) then
                 mp.msg.info("IPTV HLS兼容: 跳过过期重试，当前播放目标已变化")
                 return
             end

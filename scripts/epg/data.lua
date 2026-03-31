@@ -411,6 +411,7 @@ end
 function parse_epg_string(xml_str)
     mp.msg.info("EPG 内容预览 (前300字符): " .. xml_str:sub(1,300))
     state.epg_data = {}
+    state.epg_buckets = {}
     state.channel_bucket_cache = {}
     local parse_now_ts = os.time()
     local parse_day_start = get_local_day_start(parse_now_ts)
@@ -431,7 +432,7 @@ function parse_epg_string(xml_str)
             local end_utc = xmltv_to_utc(stop_t)
             local start_ts = utc_str_to_timestamp(start_utc)
             local end_ts = utc_str_to_timestamp(end_utc)
-            channel_epg[#channel_epg + 1] = {
+            local prog_entry = {
                 title = title,
                 start_time = start_t,
                 end_time = stop_t,
@@ -443,6 +444,19 @@ function parse_epg_string(xml_str)
                 display_start = format_display_date(start_t, parse_day_start),
                 display_end = format_display_time(stop_t)
             }
+            channel_epg[#channel_epg + 1] = prog_entry
+
+            local date_str = os.date("%Y-%m-%d", start_ts)
+            local day_buckets = state.epg_buckets[channel_id]
+            if not day_buckets then
+                day_buckets = {}
+                state.epg_buckets[channel_id] = day_buckets
+            end
+            if not day_buckets[date_str] then
+                day_buckets[date_str] = {}
+            end
+            table.insert(day_buckets[date_str], prog_entry)
+
             count = count + 1
         end
     end
@@ -920,6 +934,8 @@ function parse_m3u(path, parse_options)
     state.groups = {}
     state.group_names = {}
     state.channel_bucket_cache = {}
+    state.url_to_channel_map = {}
+    state.epg_buckets = {}
     channel_search_cache = {}
     state.selected_group_name = nil
     state.selected_channel_index = nil
@@ -951,14 +967,22 @@ function parse_m3u(path, parse_options)
                 state.groups[current_info.group] = {}
                 table.insert(state.group_names, current_info.group)
             end
-            table.insert(state.groups[current_info.group], {
+            local channel_index = #state.groups[current_info.group] + 1
+            local ch_entry = {
                 name = current_info.name,
                 url = line,
                 tvg_id = current_info.tvg_id,
                 catchup = current_info.catchup,
                 logo = current_info.logo,
                 group = current_info.group
-            })
+            }
+            table.insert(state.groups[current_info.group], ch_entry)
+            local base_url = line:match("^([^?]+)") or line
+            state.url_to_channel_map[base_url] = {
+                group_name = current_info.group,
+                channel_index = channel_index,
+                channel = ch_entry
+            }
             current_info = {}
         end
     end
@@ -994,6 +1018,20 @@ function parse_m3u(path, parse_options)
     end
 
     return true
+end
+
+-- ==================== URL 匹配 ====================
+
+function url_matches(path, target_url)
+    if path == target_url then return true end
+    local target_len = #target_url
+    if path:sub(1, target_len) == target_url then
+        local next_char = path:sub(target_len + 1, target_len + 1)
+        if next_char:match("[?#/]") then
+            return true
+        end
+    end
+    return false
 end
 
 -- ==================== 频道查找 ====================
@@ -1048,52 +1086,40 @@ function get_channel_bucket_data(ch)
         return nil
     end
 
-    local epg_list = state.epg_data[ch.tvg_id]
-    if not epg_list or #epg_list == 0 then
-        return nil
+    local pre_buckets = state.epg_buckets[ch.tvg_id]
+    if not pre_buckets then
+        local epg_list = state.epg_data[ch.tvg_id]
+        if not epg_list or #epg_list == 0 then
+            return nil
+        end
     end
 
     local now_ts = os.time()
-    local day_ts = get_local_day_start(now_ts)
-    local local_offset = get_local_timezone_offset(now_ts)
-    local cache = state.channel_bucket_cache[ch.tvg_id]
-    if cache and cache.epg_ref == epg_list and cache.day_ts == day_ts and cache.local_offset == local_offset then
-        return cache.buckets
-    end
+    local day_offsets = {
+        tomorrow = 1,
+        today = 0,
+        yesterday = -1,
+        day_minus_2 = -2,
+        day_minus_3 = -3,
+        day_minus_4 = -4,
+        day_minus_5 = -5,
+        day_minus_6 = -6,
+    }
 
     local buckets = {}
     for _, bucket_key in ipairs(DATE_BUCKET_ORDER) do
         local label, subtitle = get_bucket_label_and_subtitle(bucket_key, now_ts)
+        local offset = day_offsets[bucket_key] or 0
+        local date_str = os.date("%Y-%m-%d", get_local_day_start(now_ts) + offset * 86400)
+        local programs = pre_buckets and pre_buckets[date_str] or {}
+
         buckets[bucket_key] = {
             key = bucket_key,
             label = label,
             subtitle = subtitle,
-            programs = {}
+            programs = programs or {}
         }
     end
-
-    for _, prog in ipairs(epg_list) do
-        local bucket_key = prog.bucket_key
-        if not bucket_key then
-            if prog.start_ts then
-                bucket_key = get_bucket_key_from_timestamp(prog.start_ts, now_ts)
-            else
-                bucket_key = get_bucket_key_for_utc(prog.start_utc)
-            end
-            prog.bucket_key = bucket_key
-        end
-        if buckets[bucket_key] then
-            local bucket_programs = buckets[bucket_key].programs
-            bucket_programs[#bucket_programs + 1] = prog
-        end
-    end
-
-    state.channel_bucket_cache[ch.tvg_id] = {
-        epg_ref = epg_list,
-        day_ts = day_ts,
-        local_offset = local_offset,
-        buckets = buckets
-    }
 
     return buckets
 end
@@ -1101,6 +1127,12 @@ end
 function find_channel_by_url(url)
     if not url or url == "" then
         return nil
+    end
+
+    local base_url = url:match("^([^?]+)") or url
+    local map_entry = state.url_to_channel_map and state.url_to_channel_map[base_url]
+    if map_entry then
+        return map_entry.channel
     end
 
     for _, group_name in ipairs(state.group_names) do
@@ -1114,20 +1146,18 @@ function find_channel_by_url(url)
         end
     end
 
-    for _, channels in pairs(state.groups) do
-        for _, ch in ipairs(channels) do
-            if ch.url == url then
-                return ch
-            end
-        end
-    end
-
     return nil
 end
 
 function find_channel_position_by_url(channel_url)
     if not channel_url or channel_url == "" then
         return nil, nil
+    end
+
+    local base_url = channel_url:match("^([^?]+)") or channel_url
+    local map_entry = state.url_to_channel_map and state.url_to_channel_map[base_url]
+    if map_entry then
+        return map_entry.group_name, map_entry.channel_index
     end
 
     for _, group_name in ipairs(state.group_names) do
