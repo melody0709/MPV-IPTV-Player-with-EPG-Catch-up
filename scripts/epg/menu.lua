@@ -124,13 +124,12 @@ build_channel_epg_items = function(ch, programs)
             end
 
             if ch.catchup ~= "" and ch.catchup:find("%$%{") and prog.start_utc ~= "" and prog.end_utc ~= "" and prog.start_utc <= catchup_ready_utc then
-                local catchup_url = ch.catchup
-                catchup_url = replace_catchup_time_params(catchup_url, prog.start_utc, prog.end_utc)
+                -- 延迟生成回看 URL：菜单构建阶段只传模板和时间参数，点击时再计算实际 URL
                 table.insert(epg_items, {
                     title = prog.title,
                     subtitle = epg_subtitle,
                     value = {"script-message-to", "epg", "play-catchup",
-                        catchup_url, ch.catchup, prog.start_utc, prog.end_utc, ch.url}
+                        "", ch.catchup, prog.start_utc, prog.end_utc, ch.url}
                 })
             else
                 table.insert(epg_items, {
@@ -590,9 +589,7 @@ function build_catchup_epg_menu()
                         -- 只显示开始时间早于当前时间 2 分钟的节目（可以回看）
                         if prog.start_utc <= catchup_ready_utc then
                             local catchup_url = ch.catchup
-                            catchup_url = replace_catchup_time_params(catchup_url, prog.start_utc, prog.end_utc)
-
-                            -- 格式化显示文本：频道名称 + 时间 + 标题
+                            -- 不在此处生成完整 URL，延迟到点击时生成
                             local display_text = string.format("%s | %s | %s",
                                 ch.name, prog.display_start, prog.title)
 
@@ -602,7 +599,7 @@ function build_catchup_epg_menu()
                                     title = display_text,
                                     search_key = prog.title,  -- 只用于搜索的EPG标题
                                     value = {"script-message-to", "epg", "play-catchup",
-                                        catchup_url, ch.catchup, prog.start_utc, prog.end_utc, ch.url},
+                                        "", ch.catchup, prog.start_utc, prog.end_utc, ch.url},
                                     hint = "回看",
                                     icon = "history"
                                 }

@@ -282,11 +282,17 @@ end)
 -- 参数: catchup_url, catchup_template, start_utc, end_utc, live_url
 mp.register_script_message("play-catchup", function(catchup_url, catchup_template, start_utc, end_utc, live_url)
     mp.msg.info(string.format("play-catchup: start=%s end=%s", start_utc, end_utc))
-    if not catchup_url or not catchup_template or not start_utc or not end_utc or not live_url then
+    if not catchup_template or not start_utc or not end_utc or not live_url then
         mp.msg.error("play-catchup: 参数不完整")
-        if catchup_url then load_iptv_url(catchup_url, "catchup-fallback", false) end
+        if catchup_url and catchup_url ~= "" then load_iptv_url(catchup_url, "catchup-fallback", false) end
         return
     end
+
+    -- 如果菜单构建阶段没有预先计算 URL，则在点击时再根据模板即时生成（避免菜单打开时大量 gsub）
+    if not catchup_url or catchup_url == "" then
+        catchup_url = replace_catchup_time_params(catchup_template, start_utc, end_utc)
+    end
+
     clear_queued_catchup_state()
     set_current_catchup_state({
         live_url         = live_url,
