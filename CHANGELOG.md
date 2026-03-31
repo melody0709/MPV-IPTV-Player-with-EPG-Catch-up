@@ -1,4 +1,11 @@
 # Changelog
+## V1.7.6 - 2026-03-31
+
+- 修复：避免在回看或菜单构建时因慢源/死链导致右键或 F8 菜单卡死 —— 将菜单中对播放进度的同步查询改为通过 `time-pos` 观察器缓存读取（`mp.get_property_number("time-pos")` 改为 `state.current_time_pos`）。
+- 修复：当播放源打开失败触发 HLS 兼容重试时，改为短延迟（约 0.35 秒）且可取消的重试，避免连续立即重试压缩 UI 响应窗口。
+- 优化：在 `mpv.conf` 中启用 `network-timeout=5`，让坏源更快失败，减少主线程被阻塞的时长。
+- 同步更新：`README.md`、`INSTRUCTIONS.md` 与脚本版本号为 V1.7.6。
+
 ## V1.7.5 - 2026-03-26
 
 - 新增远程 M3U 订阅模式：可在 `script-opts/epg.conf` 配置 `m3u_download_url`，空载启动 `mpv` 时自动接管 IPTV 启动流程

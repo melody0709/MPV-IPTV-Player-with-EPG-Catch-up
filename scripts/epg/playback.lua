@@ -77,6 +77,8 @@ function load_iptv_url(url, context, allow_hls_retry, force_hls, load_mode, file
 
     local effective_mode = load_mode or "replace"
 
+    cancel_pending_hls_retry_timer()
+
     if force_hls then
         state.pending_hls_retry = nil
         local hls_options = clone_load_options(file_options) or {}
@@ -146,7 +148,7 @@ function get_catchup_reference_utc()
         return nil
     end
 
-    local time_pos = mp.get_property_number("time-pos")
+    local time_pos = state.current_time_pos
     if not time_pos or time_pos < 0 then
         time_pos = 0
     end

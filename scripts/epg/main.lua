@@ -49,7 +49,9 @@ state = {
     queued_catchup = nil,
     queued_catchup_path = nil,
     next_catchup_queued = false,
+    current_time_pos = 0,
     pending_hls_retry = nil,
+    pending_hls_retry_timer = nil,
     last_iptv_menu_data = nil,
     is_subscription_mode = false,
     subscription_url = "",
@@ -78,6 +80,7 @@ MENU_RENDER_DELAY = 0.005
 MENU_EXPAND_DELAY = 0.005
 MENU_SELECT_DELAY = 0.005
 HISTORY_SAVE_DELAY = 2.0
+HLS_RETRY_DELAY = 0.35
 
 -- ==================== 日期桶常量 ====================
 
@@ -133,6 +136,13 @@ function clear_queued_catchup_state()
     state.next_catchup_queued = false
 end
 
+function cancel_pending_hls_retry_timer()
+    if state.pending_hls_retry_timer then
+        state.pending_hls_retry_timer:kill()
+        state.pending_hls_retry_timer = nil
+    end
+end
+
 function set_queued_catchup_state(catchup_context, playback_url)
     state.queued_catchup = catchup_context
     state.queued_catchup_path = playback_url
@@ -142,6 +152,7 @@ end
 function set_current_catchup_state(catchup_context, playback_url)
     state.current_catchup = catchup_context
     state.current_catchup_path = playback_url
+    state.current_time_pos = 0
     if not catchup_context then
         clear_queued_catchup_state()
     end
@@ -305,6 +316,8 @@ mp.observe_property("duration", "number", function(name, duration)
 end)
 
 mp.observe_property("time-pos", "number", function(name, time_pos)
+    state.current_time_pos = (time_pos and time_pos >= 0) and time_pos or 0
+
     if not state.current_catchup or state.next_catchup_queued then return end
     if not time_pos or time_pos < 0 then return end
 
@@ -370,6 +383,7 @@ local function try_activate_queued_catchup_state()
 end
 
 mp.register_event("file-loaded", function()
+    cancel_pending_hls_retry_timer()
     state.pending_hls_retry = nil
     try_activate_queued_catchup_state()
 end)
@@ -383,7 +397,18 @@ mp.register_event("end-file", function(event)
     if event.reason == "error" and state.pending_hls_retry then
         local retry = state.pending_hls_retry
         state.pending_hls_retry = nil
-        load_iptv_url(retry.url, retry.context, false, true, retry.load_mode, retry.file_options)
+        cancel_pending_hls_retry_timer()
+        state.pending_hls_retry_timer = mp.add_timeout(HLS_RETRY_DELAY, function()
+            state.pending_hls_retry_timer = nil
+
+            local current_path = mp.get_property("path")
+            if current_path and current_path ~= retry.url and not current_path:find(retry.url, 1, true) then
+                mp.msg.info("IPTV HLS兼容: 跳过过期重试，当前播放目标已变化")
+                return
+            end
+
+            load_iptv_url(retry.url, retry.context, false, true, retry.load_mode, retry.file_options)
+        end)
         return
     end
 
