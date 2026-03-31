@@ -73,6 +73,7 @@ timezone_offset_cache = {}
 local_day_start_cache = {}
 top_center_osd_timer = nil
 history_save_timer = nil
+timepos_check_timer = nil
 
 -- ==================== 菜单延迟常量 ====================
 
@@ -81,6 +82,7 @@ MENU_EXPAND_DELAY = 0.005
 MENU_SELECT_DELAY = 0.005
 HISTORY_SAVE_DELAY = 2.0
 HLS_RETRY_DELAY = 0.35
+TIMEPOS_CHECK_INTERVAL = 1.0
 
 -- ==================== 日期桶常量 ====================
 
@@ -143,6 +145,13 @@ function cancel_pending_hls_retry_timer()
     end
 end
 
+function cancel_timepos_check_timer()
+    if timepos_check_timer then
+        timepos_check_timer:kill()
+        timepos_check_timer = nil
+    end
+end
+
 function set_queued_catchup_state(catchup_context, playback_url)
     state.queued_catchup = catchup_context
     state.queued_catchup_path = playback_url
@@ -154,9 +163,58 @@ function set_current_catchup_state(catchup_context, playback_url)
     state.current_catchup_path = playback_url
     state.current_time_pos = 0
     if not catchup_context then
+        cancel_timepos_check_timer()
+    end
+    if not catchup_context then
         clear_queued_catchup_state()
     end
     sync_iptv_button_state()
+end
+
+-- 抽取回看预加载检查为单独函数，供节流定时器调用
+local function perform_catchup_preload_check()
+    if not state.current_catchup or state.next_catchup_queued then return end
+
+    local time_pos = state.current_time_pos
+    if not time_pos or time_pos < 0 then return end
+
+    local duration = mp.get_property_number("duration") or state.current_catchup.last_duration
+    if not duration or duration <= 0 then return end
+
+    local preload_seconds = tonumber(options.catchup_preload_seconds) or 15
+    if preload_seconds < 1 then preload_seconds = 1 end
+    if duration - time_pos > preload_seconds then return end
+
+    local cc = state.current_catchup
+    local start_ts = utc_str_to_timestamp(cc.start_utc)
+    if not start_ts then
+        mp.msg.warn("回看预加载: 无法解析当前 start_utc，跳过预加载")
+        return
+    end
+
+    local next_start_ts = start_ts + math.floor(duration + 0.5)
+    local next_start_utc = to_utc_string(next_start_ts)
+    local next_end_utc = calc_resume_end_utc(next_start_utc)
+    if not next_end_utc then
+        mp.msg.warn("回看预加载: 无法计算 next_end_utc，跳过预加载")
+        return
+    end
+
+    local new_url = replace_catchup_time_params(cc.catchup_template, next_start_utc, next_end_utc)
+    local queued_context = {
+        live_url = cc.live_url,
+        catchup_template = cc.catchup_template,
+        start_utc = next_start_utc,
+        last_end_utc = next_end_utc,
+        last_duration = nil
+    }
+
+    if not load_iptv_url(new_url, "catchup-preload", false, false, "insert-next") then
+        return
+    end
+
+    set_queued_catchup_state(queued_context, new_url)
+    mp.msg.info(string.format("回看预加载: 已提前排队下一段 start=%s end=%s", next_start_utc, next_end_utc))
 end
 
 function set_current_channel_state(channel)
@@ -318,46 +376,15 @@ end)
 mp.observe_property("time-pos", "number", function(name, time_pos)
     state.current_time_pos = (time_pos and time_pos >= 0) and time_pos or 0
 
+    -- 节流：只在未排队并且存在回看上下文时以秒级频率触发检查
     if not state.current_catchup or state.next_catchup_queued then return end
-    if not time_pos or time_pos < 0 then return end
 
-    local duration = mp.get_property_number("duration") or state.current_catchup.last_duration
-    if not duration or duration <= 0 then return end
-
-    local preload_seconds = tonumber(options.catchup_preload_seconds) or 15
-    if preload_seconds < 1 then preload_seconds = 1 end
-    if duration - time_pos > preload_seconds then return end
-
-    local cc = state.current_catchup
-    local start_ts = utc_str_to_timestamp(cc.start_utc)
-    if not start_ts then
-        mp.msg.warn("回看预加载: 无法解析当前 start_utc，跳过预加载")
-        return
+    if not timepos_check_timer then
+        timepos_check_timer = mp.add_timeout(TIMEPOS_CHECK_INTERVAL, function()
+            timepos_check_timer = nil
+            perform_catchup_preload_check()
+        end)
     end
-
-    local next_start_ts = start_ts + math.floor(duration + 0.5)
-    local next_start_utc = to_utc_string(next_start_ts)
-    local next_end_utc = calc_resume_end_utc(next_start_utc)
-    if not next_end_utc then
-        mp.msg.warn("回看预加载: 无法计算 next_end_utc，跳过预加载")
-        return
-    end
-
-    local new_url = replace_catchup_time_params(cc.catchup_template, next_start_utc, next_end_utc)
-    local queued_context = {
-        live_url = cc.live_url,
-        catchup_template = cc.catchup_template,
-        start_utc = next_start_utc,
-        last_end_utc = next_end_utc,
-        last_duration = nil
-    }
-
-    if not load_iptv_url(new_url, "catchup-preload", false, false, "insert-next") then
-        return
-    end
-
-    set_queued_catchup_state(queued_context, new_url)
-    mp.msg.info(string.format("回看预加载: 已提前排队下一段 start=%s end=%s", next_start_utc, next_end_utc))
 end)
 
 local function try_activate_queued_catchup_state()
