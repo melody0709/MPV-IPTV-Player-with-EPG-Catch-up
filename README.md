@@ -16,6 +16,26 @@
 - **历史记录**：自动保存/恢复上次播放的频道；连续快速切台时会合并为 2 秒后的单次写盘，减少频繁 IO
 - **多平台支持**：Windows/Linux/macOS，自带 curl 工具链
 
+## 📸 界面截图
+
+### 四级滑动菜单 (F8) / 右键
+分组 > 频道 > 日期桶 > EPG，支持顶部搜索框按频道名快速筛选
+
+![四级滑动菜单](screenshots/menu.webp)
+
+### EPG 回看搜索 (F9)
+跨频道搜索所有可回看的节目，按时间倒序排列
+
+![EPG 回看搜索](screenshots/epg-search.webp)
+
+### 频道模糊搜索菜单
+epg菜单项,直接按键输入即可激活
+
+![智能右键菜单](screenshots/context-menu.webp)
+
+### 演示视频
+![demo](screenshots/demo.mp4)
+
 ## 快速使用
 
 1. 下载 mpv Windows 版（推荐 shinchiro mpv-winbuild）
