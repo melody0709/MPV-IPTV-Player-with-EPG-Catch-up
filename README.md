@@ -34,7 +34,8 @@ epg菜单项,直接按键输入即可激活
 ![智能右键菜单](screenshots/context-menu.webp)
 
 ### 演示视频
-<video src="screenshots/demo.mp4" controls width="640"></video>
+https://github.com/user-attachments/assets/e3a6009f-b783-4dfd-bbd2-3c1b7f81a280
+
 
 ## 快速使用
 
