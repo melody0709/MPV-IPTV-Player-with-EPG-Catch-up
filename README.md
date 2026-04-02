@@ -45,7 +45,7 @@ https://github.com/user-attachments/assets/e3a6009f-b783-4dfd-bbd2-3c1b7f81a280
    ```bash
    mpv tv.m3u
    ```
-4. 如果想使用远程订阅，在 `script-opts/epg.conf` 中设置 `m3u_download_url` 后，直接空载启动：
+4. 如果想使用远程订阅，把 `m3u_download_url` 写到 `script-opts/epg.conf`，然后直接空载启动：
    ```bash
    mpv
    ```
@@ -172,7 +172,7 @@ portable_config/
 
 ## 常见问题
 
-- 无 EPG：确认 `x-tvg-url` 可访问,修改script-opts\epg.conf 中的下载连接
+- 无 EPG：确认 `x-tvg-url` 可访问，检查 `script-opts/epg.conf` 中的下载连接
 - 无回看：检查 `catchup-source` 时间模板
 - 无历史记忆：确认脚本有写权限
 - 某些直播频道在 Android IPTV 能播、mpv 直接打开不行：当前脚本会在“先打开本地 M3U，再通过 IPTV 菜单/历史恢复播放频道”时，先按 mpv 默认方式打开；只有当 mpv 明确报错，且该地址看起来像无明确媒体后缀的 HTTP/HTTPS IPTV 源时，才自动再用 HLS 方式重试一次；这只作用于 IPTV 工作流，不会改动普通本地文件或普通网络文件的全局行为
@@ -184,18 +184,18 @@ portable_config/
 
 ### EPG 下载 URL（可选）
 
-脚本会优先使用 `script-opts/epg.conf` 中的 `epg_download_url` 配置来下载 EPG 数据，若该值为空则会回退到 M3U 中的 `x-tvg-url` 字段。
+脚本会优先使用 `script-opts/epg.conf` 中的 `epg_download_url` 配置来下载 EPG 数据；若该值为空，则回退到 M3U 中的 `x-tvg-url` 字段。
 
 `script-opts/epg.conf` 示例：
 
 ```ini
 # EPG 下载连接配置
 # 当此参数存在时，优先使用该连接下载 EPG，而不是 M3U 表头中的 x-tvg-url
-epg_download_url=http://your-epg-source.com/epg.xml
+epg_download_url=
 
 # 远程 M3U 订阅地址（可选）
 # 配置后，空载启动 mpv 会优先尝试从缓存启动 IPTV，再在后台刷新远程订阅
-m3u_download_url=http://your-iptv-source.com/tv.m3u
+m3u_download_url=
 
 # EPG 缓存刷新时间配置
 # 从每天 00:04 开始，按 7 小时间隔生成当天刷新点：00:04 / 07:04 / 14:04 / 21:04
@@ -298,8 +298,8 @@ menu_level4_min_width=0
 ## 版本信息
 
 - **基础版本**：uosc 5.12.0
-- **IPTV 版本**：V1.7.8（2026-03-31）
-- **最后更新**：2026-03-31
+- **IPTV 版本**：V1.8.0（2026-04-02）
+- **最后更新**：2026-04-02
 
 ## 🤝 致谢
 

@@ -60,7 +60,8 @@ portable_config/
 │       └── 📁 bin/           # ziggy 二进制文件
 │
 ├── 📁 script-opts/           # 脚本配置文件
-│   └── 📄 epg.conf           # EPG / 远程 M3U 订阅配置
+│   ├── 📄 epg.conf           # 发布版默认配置
+│   └── 📄 myepg.conf         # 本地私有覆盖（可选，不发布）
 │
 └── 📁 fonts/                 # 字体文件
 ```
@@ -157,6 +158,8 @@ portable_config/
 - `CHANGELOG.md` 必须保持“每个版本一个独立小节”（版本号、日期、变更列表）。
 - 建议先从 `CHANGELOG.md` 提取当前版本小节到临时发布说明文件，再用于 GitHub Release。
 - 发布前核对：Release 标题版本号、Git Tag、`CHANGELOG.md` 当前版本小节三者一致。
+- 根目录 `release.py` 用于生成发布 zip，默认输出到 `release/`，并排除缓存、日志、截图、`watch_later`、`.git`、`.vscode` 与 `script-opts/myepg.conf`。
+- `script-opts/epg.conf` 应保持为可发布的默认配置；个人 EPG / M3U 地址写入 `script-opts/myepg.conf`，并让其覆盖默认值。
 
 ### 调试方法
 

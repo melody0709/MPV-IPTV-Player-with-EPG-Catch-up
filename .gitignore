@@ -3,3 +3,4 @@ cache/
 watch_later/
 *.log
 prompt.md
+script-opts/myepg.conf

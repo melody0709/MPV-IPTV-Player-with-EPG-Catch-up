@@ -21,7 +21,74 @@ options = {
     menu_level3_min_width = 0,
     menu_level4_min_width = 0
 }
+
+-- 【新增】支持 myepg.conf 本地私有配置覆盖，便于发布时排除个人地址
+local function trim_option_value(value)
+    if not value then return "" end
+    return value:match("^%s*(.-)%s*$")
+end
+
+local function coerce_override_value(current_value, raw_value)
+    local value = trim_option_value(raw_value)
+
+    if type(current_value) == "number" then
+        local parsed_number = tonumber(value)
+        if parsed_number ~= nil then
+            return parsed_number
+        end
+        return current_value
+    end
+
+    if type(current_value) == "boolean" then
+        local normalized = value:lower()
+        if normalized == "yes" or normalized == "true" or normalized == "1" then
+            return true
+        end
+        if normalized == "no" or normalized == "false" or normalized == "0" then
+            return false
+        end
+        return current_value
+    end
+
+    return value
+end
+
+local function load_local_override_options(target_options)
+    local override_path = mp.command_native({"expand-path", "~~home/script-opts/myepg.conf"})
+    local file = io.open(override_path, "r")
+    if not file then
+        return
+    end
+
+    local content = file:read("*a")
+    file:close()
+    if not content or content == "" then
+        return
+    end
+
+    if content:sub(1, 3) == "\239\187\191" then
+        content = content:sub(4)
+    end
+
+    local applied_count = 0
+    for raw_line in content:gmatch("([^\r\n]+)") do
+        local line = trim_option_value(raw_line)
+        if line ~= "" and not line:match("^#") and not line:match("^;") then
+            local key, value = line:match("^([%w_%-%.]+)%s*=%s*(.-)%s*$")
+            if key and target_options[key] ~= nil then
+                target_options[key] = coerce_override_value(target_options[key], value)
+                applied_count = applied_count + 1
+            end
+        end
+    end
+
+    if applied_count > 0 then
+        mp.msg.info("已加载 myepg.conf 覆盖配置: " .. override_path)
+    end
+end
+
 opt.read_options(options)
+load_local_override_options(options)
 
 -- ==================== 全局状态 ====================
 
